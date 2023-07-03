@@ -83,7 +83,7 @@ pub struct RxTransfer<U, STREAM, const CHANNEL: u8>
 impl<U, STREAM, const CHANNEL: u8> RxTransfer<U, STREAM, CHANNEL>
     where
         U: Instance,
-        Rx<U, u8>: PeriAddress<MemSize=u8> + DMASet<STREAM, CHANNEL, PeripheralToMemory> + RxISR + RxListen,
+        Rx<U>: PeriAddress<MemSize=u8> + DMASet<STREAM, CHANNEL, PeripheralToMemory> + RxISR + RxListen,
         STREAM: Stream,
         ChannelX<CHANNEL>: Channel,
 {
@@ -136,15 +136,15 @@ impl<U, STREAM, const CHANNEL: u8> RxTransfer<U, STREAM, CHANNEL>
         self.buffer_overflow = false;
     }
 
-    pub fn on_rx_transfer_interrupt<F: FnOnce(&[u8])->()>(&mut self, receiver: F) -> Result<(), Errors> {
+    pub fn on_rx_transfer_interrupt<F: FnOnce(&[u8]) -> Result<(), Errors>>(&mut self, receiver: F) -> Result<(), Errors> {
         if self.rx_transfer.is_idle() {
             self.rx_transfer.clear_idle_interrupt();
             let bytes_count = BUFFER_SIZE - STREAM::get_number_of_transfers() as usize;
             let new_buffer = self.back_buffer.take().unwrap();
             let (buffer, _) = self.rx_transfer.next_transfer(new_buffer).unwrap();
-            receiver(&buffer[..bytes_count]);
+            let result = receiver(&buffer[..bytes_count]);
             self.return_buffer(buffer);
-            return Ok(());
+            return result;
         }
         Err(Errors::TransferInProgress)
     }

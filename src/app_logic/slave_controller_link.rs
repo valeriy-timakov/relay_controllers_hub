@@ -3,8 +3,8 @@ use stm32f4xx_hal::dma::{ChannelX, MemoryToPeripheral, PeripheralToMemory};
 use stm32f4xx_hal::serial::{Rx, Tx, Instance, RxISR, TxISR, RxListen};
 use stm32f4xx_hal::dma::traits::{Channel, DMASet, PeriAddress, Stream};
 use crate::errors::Errors;
-use crate::hal_ext::rtc_wrapper::{RelativeSeconds};
-use crate::hal_ext::serial_transfer::{RxTransfer, SerialTransfer, TxTransfer};
+use crate::hal_ext::rtc_wrapper::{RelativeMillis, RelativeSeconds};
+use crate::hal_ext::serial_transfer::{RxTransfer, SerialTransfer, TxBuffer, TxTransfer};
 
 #[repr(u8)]
 #[derive(Copy, Clone)]
@@ -21,7 +21,7 @@ enum Operation {
 
 #[repr(u8)]
 #[derive(Copy, Clone, PartialEq)]
-pub enum Instruction {
+pub enum Instruction<T> {
     None = 0x00,
     Settings = 0x01,
     State = 0x02,
@@ -66,7 +66,7 @@ pub enum ErrorCode {
 
 pub trait SignalsReceiver {
     fn on_signal(&mut self, signal_data: SignalData);
-    fn on_signal_error(&mut self, instruction: Option<Instruction>, error_code: ErrorCode);
+    fn on_signal_error(&mut self, instruction: Option<Instruction<()>>, error_code: ErrorCode);
 }
 
 pub struct SlaveControllerLink<U, TxStream, const TX_CHANNEL: u8, RxStream, const RX_CHANNEL: u8, SR>
@@ -126,6 +126,11 @@ struct TransmitterToSlaveController<U, TxStream, const TX_CHANNEL: u8>
     tx: TxTransfer<U, TxStream, TX_CHANNEL>,
 }
 
+struct Request<T> {
+    operation: Operation,
+    instruction: Instruction<T>,
+    rel_timestamp: RelativeMillis
+}
 
 impl <U, TxStream, const TX_CHANNEL: u8> TransmitterToSlaveController<U, TxStream, TX_CHANNEL>
     where
@@ -138,20 +143,30 @@ impl <U, TxStream, const TX_CHANNEL: u8> TransmitterToSlaveController<U, TxStrea
         Self { tx }
     }
 
+    fn send_set_request<T, F: FnOnce(&mut TxBuffer)->()>(&mut self, instruction: Instruction<T>, writter: F) -> Result<(), Errors> {
+        self.tx.start_transfer(|buffer| {
+            buffer.add_byte(Operation::None as u8).unwrap();
+            buffer.add_byte(Operation::Set as u8).unwrap();
+            buffer.add_byte(instruction as u8).unwrap();
+            writter(buffer);
+        })
+    }
+
     pub fn send_relative_timestamp(&mut self, value: RelativeSeconds) -> Result<(), Errors> {
         let seconds: u32 = value.value();
         self.tx.start_transfer(|buffer| {
             buffer.add_byte(Operation::None as u8).unwrap();
             buffer.add_byte(Operation::Set as u8).unwrap();
             buffer.add_byte(Instruction::RemoteTimestamp as u8).unwrap();
-            buffer.add_byte((seconds >> 24 & 0xff) as u8).unwrap();
-            buffer.add_byte((seconds >> 16 & 0xff) as u8).unwrap();
-            buffer.add_byte((seconds >> 8 & 0xff) as u8).unwrap();
-            buffer.add_byte((seconds & 0xff) as u8).unwrap();
+            for i in 0..4 {
+                buffer.add_byte(((seconds >> ((3 - i) * 8)) & 0xff) as u8).unwrap();
+            }
         })
     }
 
-    pub fn send_error(&mut self, instruction: Instruction, error_code: ErrorCode) -> Result<(), Errors> {
+
+
+    pub fn send_error<T>(&mut self, instruction: Instruction<T>, error_code: ErrorCode) -> Result<(), Errors> {
         self.tx.start_transfer(|buffer| {
             buffer.add_byte(Operation::None as u8).unwrap();
             buffer.add_byte(Operation::Error as u8).unwrap();
@@ -179,7 +194,7 @@ struct ReceiverFromSlaveController<U, RxStream, const RX_CHANNEL: u8, SR>
 }
 
 pub struct SignalData {
-    instruction: Instruction,
+    instruction: Instruction<()>,
     relative_timestamp: RelativeSeconds,
     relay_idx: u8,
     is_on: bool,
@@ -214,18 +229,18 @@ impl <U, RxStream, const RX_CHANNEL: u8, SR> ReceiverFromSlaveController<U, RxSt
             if data.len() > 3 && data[0] == Operation::None as u8 {
                 let operation = data[0];
                 if operation == Operation::Signal as u8 {
-                    let instruction = data[2];
-                    if instruction == Instruction::GetTimeStamp as u8 {
+                    let instruction_code = data[2];
+                    if instruction_code == Instruction::GetTimeStamp as u8 {
                         let seconds: RelativeSeconds = time_src();
-                        tx.send_relative_timestamp(seconds).unwrap();
+                        tx.send_relative_timestamp(seconds)
                     } else {
-                        let instruction = if instruction == Instruction::MonitoringStateChanged as u8 {
+                        let instruction = if instruction_code == Instruction::MonitoringStateChanged as u8 {
                             Some(Instruction::MonitoringStateChanged)
-                        } else  if instruction == Instruction::StateFixTry as u8 {
+                        } else  if instruction_code == Instruction::StateFixTry as u8 {
                             Some(Instruction::StateFixTry)
-                        } else  if instruction == Instruction::ControlStateChanged as u8 {
+                        } else  if instruction_code == Instruction::ControlStateChanged as u8 {
                             Some(Instruction::ControlStateChanged)
-                        } else  if instruction == Instruction::RelayStateChanged as u8 {
+                        } else  if instruction_code == Instruction::RelayStateChanged as u8 {
                             Some(Instruction::RelayStateChanged)
                         } else {
                             None
@@ -235,33 +250,38 @@ impl <U, RxStream, const RX_CHANNEL: u8, SR> ReceiverFromSlaveController<U, RxSt
                                 match Self::read_signal_data(instruction, &data[3..]) {
                                     Ok(signal_data) => {
                                         signal_receiver.on_signal(signal_data);
+                                        Ok(())
                                     }
                                     Err(error) => {
                                         signal_receiver.on_signal_error(Some(instruction), error);
                                         tx.send_error(instruction, error).unwrap();
+                                        Err(Errors::DataCorrupted)
                                     }
                                 }
                             }
                             None => {
                                 signal_receiver.on_signal_error(None, ErrorCode::EInstructionUnrecognized);
                                 tx.send_error(Instruction::Unknown, ErrorCode::ERequestDataNoValue).unwrap();
+                                Err(Errors::InstructionNotRecognized(instruction_code))
                             }
                         }
                     }
-                } else if operation == Operation::Set as u8 {
-
                 } else if operation == Operation::Error as u8 {
-
+                    Ok(())
                 } else if operation == Operation::Response as u8 {
-
+                    Ok(())
                 } else if operation == Operation::Success as u8 {
-
+                    Ok(())
+                } else {
+                    Err(Errors::OperationNotRecognized(operation))
                 }
+            } else {
+                Err(Errors::NotEnoughDataGot)
             }
         })
     }
 
-    fn read_signal_data(instruction: Instruction, data: &[u8]) -> Result<SignalData, ErrorCode> {
+    fn read_signal_data<T>(instruction: Instruction<T>, data: &[u8]) -> Result<SignalData, ErrorCode> {
         if data.len() < 5 {
             return Err(ErrorCode::ERequestDataNoValue);
         }

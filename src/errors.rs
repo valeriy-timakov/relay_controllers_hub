@@ -9,5 +9,9 @@ pub enum Errors {
     TransferInProgress,
     DmaBufferOverflow,
     CommandDataCorrupted,
+    NotEnoughDataGot,
+    OperationNotRecognized(u8),
+    InstructionNotRecognized(u8),
+    DataCorrupted,
     DmaError(DMAError<()>),
 }
