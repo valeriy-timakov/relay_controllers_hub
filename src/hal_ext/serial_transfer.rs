@@ -221,7 +221,7 @@ impl<U, STREAM, const CHANNEL: u8> TxTransfer<U, STREAM, CHANNEL>
     Takes writter function to generate send data and sens them to UART though DMA. Should always return Ok if
     is called from one thread only at the same time.
     */
-    pub fn start_transfer<F: FnOnce(&mut TxBuffer)->()>(&mut self, writter: F) -> Result<(), Errors> {
+    pub fn start_transfer<F: FnOnce(&mut TxBuffer)->Result<(), Errors>>(&mut self, writter: F) -> Result<(), Errors> {
         if !self.last_transfer_ended {
             return Err(Errors::TransferInProgress);
         }
@@ -230,7 +230,7 @@ impl<U, STREAM, const CHANNEL: u8> TxTransfer<U, STREAM, CHANNEL>
             None => Err(Errors::NoBufferAvailable),
         }?;
         new_buffer.clear();
-        writter(&mut new_buffer);
+        writter(&mut new_buffer)?;
 
 
         match self.tx_transfer.next_transfer( new_buffer) {

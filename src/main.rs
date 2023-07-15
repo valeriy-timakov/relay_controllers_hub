@@ -3,7 +3,7 @@
 #![no_main]
 #![no_std]
 
-use stm32_test::app_logic::slave_controller_link::{SignalData, SignalsReceiver};
+use stm32_test::app_logic::slave_controller_link::{ErrorCode, Request, Response, SignalData, SignalsReceiver};
 //use panic_halt as _;
 
 
@@ -15,6 +15,22 @@ impl SignalsReceiver for SignalReceiverImp {
     }
 
     fn on_signal_error(&mut self, _: Option<stm32_test::app_logic::slave_controller_link::Instruction>, _: stm32_test::app_logic::slave_controller_link::ErrorCode) {
+        todo!()
+    }
+
+    fn on_request_success(&mut self, _: &Request) {
+        todo!()
+    }
+
+    fn on_request_error(&mut self, request: &Request, error_code: ErrorCode) {
+        todo!()
+    }
+
+    fn on_request_parse_error(&mut self, request: &Request, data: &[u8]) {
+        todo!()
+    }
+
+    fn on_request_response(&mut self, request: &Request, response: Response) {
         todo!()
     }
 }
@@ -141,7 +157,7 @@ mod app {
         let serial_transfer_6 = SerialTransfer::new(serial6, dma2.6, dma2.1);
 
         let signal_receiver = SignalReceiverImp();
-        let controller_link_slave6 = SlaveControllerLink::new(serial_transfer_6, signal_receiver);
+        let controller_link_slave6 = SlaveControllerLink::create(serial_transfer_6, signal_receiver).unwrap();
 
         let led = Led::new(4, 2, true, gpioc.pc13.into_push_pull_output());
         let mut button = gpioa.pa0.into_pull_up_input();
@@ -212,7 +228,7 @@ mod app {
         let serial_transfer_1: &mut Serial1Transfer = ctx.shared.serial_transfer_1;
         let tx: &mut Tx1Transfer = serial_transfer_1.tx();
         tx.start_transfer(|buf| {
-            buf.add_str(_s).unwrap();
+            buf.add_str(_s)
         }).unwrap();
 
     }
@@ -236,10 +252,11 @@ mod app {
             hprintln!("rx got");
             tx.start_transfer(|buffer| {
                 hprintln!("writng answer...");
-                buffer.add("bytes_: ".as_bytes()).unwrap();
-                buffer.add(data).unwrap();
+                buffer.add("bytes_: ".as_bytes())?;
+                buffer.add(data)?;
                 hprintln!("answer wroten!");
-            }).unwrap();
+                Ok(())
+            })
         }) {
             Ok(_) => { hprintln!("rx interrupt handled!"); }
             Err(_) => { hprintln!("Wrong UART1 on idle interrupt: no buffer!"); }
@@ -258,7 +275,8 @@ mod app {
                     buffer.add("bytes_: ".as_bytes()).unwrap();
                     buffer.add(data).unwrap();
                     hprintln!("answer wroten!");
-                }).unwrap();
+                    Ok(())
+                })
             }) {
                 Ok(_) => { hprintln!("rx interrupt handled!"); }
                 Err(_) => { hprintln!("Wrong UART1 on idle interrupt: no buffer!"); }
@@ -271,7 +289,7 @@ mod app {
         let usart6::SharedResources { mut controller_link_slave6, mut rtc } = ctx.shared;
         controller_link_slave6.lock(|controller_link_slave: &mut ControllerLinkSlave6| {
             match controller_link_slave.on_get_command(|| {
-                rtc.lock(|rtc: &mut RtcWrapper| { rtc.get_relative_seconds() })
+                rtc.lock(|rtc: &mut RtcWrapper| { rtc.get_relative_timestamp() })
             }) {
                 Ok(_) => { hprintln!("rx interrupt handled!"); }
                 Err(_) => { hprintln!("Wrong UART1 on idle interrupt: no buffer!"); }

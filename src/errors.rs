@@ -14,4 +14,12 @@ pub enum Errors {
     InstructionNotRecognized(u8),
     DataCorrupted,
     DmaError(DMAError<()>),
+    RequestslLimitReached,
+    NoRequestsFound,
+    RelayIndexOutOfRange,
+    RelayCountOverflow,
+    SlaveControllersInstancesMaxCountReached,
+    FromAfterTo,
+    OutOfRange,
+    SwitchesDataCountOverflow,
 }

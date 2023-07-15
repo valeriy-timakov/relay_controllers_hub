@@ -2,7 +2,10 @@ use stm32f4xx_hal::rtc::{Error, Rtc};
 use time::PrimitiveDateTime;
 use time_core::convert::{ Millisecond, Second, Nanosecond};
 
+#[derive(Copy, Clone)]
 pub struct RelativeMillis(u32);
+
+#[derive(Copy, Clone)]
 pub struct RelativeSeconds(u32);
 
 impl RelativeMillis {
@@ -15,11 +18,17 @@ impl RelativeMillis {
     pub fn value(&self) -> u32 {
         self.0
     }
+
+    #[inline(always)]
+    pub fn seconds(&self) -> RelativeSeconds {
+        RelativeSeconds(self.0 / Millisecond.per(Second) as u32)
+    }
 }
 
 impl RelativeSeconds {
 
-    pub fn new(value: u32) -> Self {
+    #[inline(always)]
+    pub const fn new(value: u32) -> Self {
         Self(value)
     }
 
