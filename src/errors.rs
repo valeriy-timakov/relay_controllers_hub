@@ -22,4 +22,6 @@ pub enum Errors {
     FromAfterTo,
     OutOfRange,
     SwitchesDataCountOverflow,
+    InvalidDataSize,
+    InstructionNotSerializable,
 }

@@ -3,7 +3,9 @@
 #![no_main]
 #![no_std]
 
-use stm32_test::app_logic::slave_controller_link::{ErrorCode, Request, Response, SignalData, SignalsReceiver};
+use stm32_test::app_logic::slave_controller_link::{ SentRequest, SignalData, SignalsReceiver};
+use stm32_test::app_logic::slave_controller_link::domain::{DataInstructions, ErrorCode, Signals};
+use stm32_test::errors::Errors;
 //use panic_halt as _;
 
 
@@ -14,23 +16,23 @@ impl SignalsReceiver for SignalReceiverImp {
         todo!()
     }
 
-    fn on_signal_error(&mut self, _: Option<stm32_test::app_logic::slave_controller_link::Instruction>, _: stm32_test::app_logic::slave_controller_link::ErrorCode) {
+    fn on_signal_error(&mut self, _: Option<Signals>, _: ErrorCode) {
         todo!()
     }
 
-    fn on_request_success(&mut self, _: &Request) {
+    fn on_request_success(&mut self, _: &SentRequest) {
         todo!()
     }
 
-    fn on_request_error(&mut self, request: &Request, error_code: ErrorCode) {
+    fn on_request_error(&mut self, request: &SentRequest, error_code: ErrorCode) {
         todo!()
     }
 
-    fn on_request_parse_error(&mut self, request: &Request, data: &[u8]) {
+    fn on_request_parse_error(&mut self, request: &SentRequest, error: Errors, data: &[u8]) {
         todo!()
     }
 
-    fn on_request_response(&mut self, request: &Request, response: Response) {
+    fn on_request_response(&mut self, request: &SentRequest, response: DataInstructions) {
         todo!()
     }
 }

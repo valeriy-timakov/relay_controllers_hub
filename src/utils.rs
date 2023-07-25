@@ -69,7 +69,7 @@ pub struct BitsU64 {
 
 impl BitsU64 {
 
-    pub fn new(bits: u64) -> Self {
+    pub const fn new(bits: u64) -> Self {
         Self { bits }
     }
 
