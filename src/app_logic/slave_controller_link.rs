@@ -1,8 +1,6 @@
 pub mod domain;
 
-use core::cmp::max;
 use core::mem::size_of;
-use cortex_m::peripheral::cpuid::CsselrCacheType::Instruction;
 use cortex_m_semihosting::hprintln;
 use stm32f4xx_hal::dma::{ChannelX, MemoryToPeripheral, PeripheralToMemory};
 use stm32f4xx_hal::serial::{Rx, Tx, Instance, RxISR, TxISR, RxListen};
@@ -10,8 +8,7 @@ use stm32f4xx_hal::dma::traits::{Channel, DMASet, PeriAddress, Stream};
 use crate::app_logic::slave_controller_link::domain::{*};
 use crate::errors::Errors;
 use crate::hal_ext::rtc_wrapper::{RelativeMillis, RelativeSeconds };
-use crate::hal_ext::serial_transfer::{RxTransfer, SerialTransfer, TxBuffer, TxTransfer};
-use crate::utils::{BitsU64, BitsU8};
+use crate::hal_ext::serial_transfer::{RxTransfer, SerialTransfer, TxTransfer};
 
 
 
@@ -149,9 +146,9 @@ impl <U, TxStream, const TX_CHANNEL: u8> TransmitterToSlaveController<U, TxStrea
         }
         let result = self.tx.start_transfer(|buffer| {
             buffer.clear();
-            buffer.add_byte(Operation::None as u8)?;
-            buffer.add_byte(operation as u8)?;
-            buffer.add_byte(instruction.discriminant())?;
+            buffer.add_u8(Operation::None as u8)?;
+            buffer.add_u8(operation as u8)?;
+            buffer.add_u8(instruction.discriminant())?;
             instruction.serialize(buffer)
         });
         self.sent_requests[self.requests_count] = Some(SentRequest::new(operation, instruction, timestamp));
@@ -161,10 +158,10 @@ impl <U, TxStream, const TX_CHANNEL: u8> TransmitterToSlaveController<U, TxStrea
 
     pub fn send_error(&mut self, instruction_code: u8, error_code: ErrorCode) -> Result<(), Errors> {
         self.tx.start_transfer(|buffer| {
-            buffer.add_byte(Operation::None as u8)?;
-            buffer.add_byte(Operation::Error as u8)?;
-            buffer.add_byte(instruction_code)?;
-            buffer.add_byte(error_code.discriminant())
+            buffer.add_u8(Operation::None as u8)?;
+            buffer.add_u8(Operation::Error as u8)?;
+            buffer.add_u8(instruction_code)?;
+            buffer.add_u8(error_code.discriminant())
         })
     }
 

@@ -16,6 +16,7 @@ impl <const BUFFER_SIZE: usize> Buffer<BUFFER_SIZE> {
         Self { buffer, size: 0 }
     }
 
+    #[inline(always)]
     pub fn add_str(&mut self, string: &str) -> Result<(), Errors> {
         self.add(string.as_bytes())
     }
@@ -31,11 +32,64 @@ impl <const BUFFER_SIZE: usize> Buffer<BUFFER_SIZE> {
         Ok(())
     }
 
-    pub fn add_byte(&mut self, byte: u8) -> Result<(), Errors> {
+    #[inline]
+    pub fn add_u8(&mut self, byte: u8) -> Result<(), Errors> {
         if 1 > BUFFER_SIZE - self.size {
             return Err(Errors::DmaBufferOverflow);
         }
         self.buffer[self.size] = byte;
+        self.size += 1;
+        Ok(())
+    }
+
+    #[inline]
+    pub fn add_u16(&mut self, value: u16) -> Result<(), Errors> {
+        if 2 > BUFFER_SIZE - self.size {
+            return Err(Errors::DmaBufferOverflow);
+        }
+        self.buffer[self.size] = ((value >> 8) & 0xff) as u8;
+        self.size += 1;
+        self.buffer[self.size] = (value & 0xff) as u8;
+        self.size += 1;
+        Ok(())
+    }
+
+    #[inline]
+    pub fn add_u32(&mut self, value: u32) -> Result<(), Errors> {
+        if 4 > BUFFER_SIZE - self.size {
+            return Err(Errors::DmaBufferOverflow);
+        }
+        self.buffer[self.size] = ((value >> 24) & 0xff) as u8;
+        self.size += 1;
+        self.buffer[self.size] = ((value >> 16) & 0xff) as u8;
+        self.size += 1;
+        self.buffer[self.size] = ((value >> 8) & 0xff) as u8;
+        self.size += 1;
+        self.buffer[self.size] = (value & 0xff) as u8;
+        self.size += 1;
+        Ok(())
+    }
+
+    #[inline]
+    pub fn add_u64(&mut self, value: u64) -> Result<(), Errors> {
+        if 8 > BUFFER_SIZE - self.size {
+            return Err(Errors::DmaBufferOverflow);
+        }
+        self.buffer[self.size] = ((value >> 56) & 0xff) as u8;
+        self.size += 1;
+        self.buffer[self.size] = ((value >> 48) & 0xff) as u8;
+        self.size += 1;
+        self.buffer[self.size] = ((value >> 40) & 0xff) as u8;
+        self.size += 1;
+        self.buffer[self.size] = ((value >> 32) & 0xff) as u8;
+        self.size += 1;
+        self.buffer[self.size] = ((value >> 24) & 0xff) as u8;
+        self.size += 1;
+        self.buffer[self.size] = ((value >> 16) & 0xff) as u8;
+        self.size += 1;
+        self.buffer[self.size] = ((value >> 8) & 0xff) as u8;
+        self.size += 1;
+        self.buffer[self.size] = (value & 0xff) as u8;
         self.size += 1;
         Ok(())
     }

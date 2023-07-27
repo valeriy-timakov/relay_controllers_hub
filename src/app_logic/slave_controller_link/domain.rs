@@ -103,10 +103,67 @@ impl DataInstructions {
 
     pub fn parse_from(&mut self, data: &[u8]) -> Result<(), Errors> {
         match self {
-            DataInstructions::Settings(Some(Conversation::DataCashed(ref_data))) => {
+            DataInstructions::RemoteTimestamp(Some(Conversation::Data(ref_data))) => {
                 ref_data.parse_from(data)
             }
-            _ => { Err(Errors::InstructionNotSerializable) }
+            DataInstructions::CurrentTime(Some(Conversation::Data(ref_data))) => {
+                ref_data.parse_from(data)
+            }
+            DataInstructions::Id(Some(Conversation::Data(ref_data))) => {
+                ref_data.parse_from(data)
+            }
+            DataInstructions::Version(Some(Conversation::Data(ref_data))) => {
+                ref_data.parse_from(data)
+            }
+            DataInstructions::StateFixSettings(Some(Conversation::Data(ref_data))) => {
+                ref_data.parse_from(data)
+            }
+            DataInstructions::RelayState(Some(Conversation::Data(ref_data))) => {
+                ref_data.parse_from(data)
+            }
+            DataInstructions::State(Some(Conversation::Data(ref_data))) => {
+                ref_data.parse_from(data)
+            }
+            DataInstructions::CyclesStatistics(Some(Conversation::Data(ref_data))) => {
+                ref_data.parse_from(data)
+            }
+            DataInstructions::FixData(Some(Conversation::Data(ref_data))) => {
+                ref_data.parse_from(data)
+            }
+            DataInstructions::Settings(Some(Conversation::Data(ref_data))) => {
+                ref_data.parse_from(data)
+            }
+            //v2 instructions
+            DataInstructions::ContactWaitData(Some(Conversation::Data(ref_data))) => {
+                ref_data.parse_from(data)
+            }
+            DataInstructions::SwitchData(Some(Conversation::Data(ref_data))) => {
+                ref_data.parse_from(data)
+            }
+            DataInstructions::InterruptPin(Some(Conversation::Data(ref_data))) => {
+                ref_data.parse_from(data)
+            }
+            DataInstructions::SwitchCountingSettings(Some(Conversation::Data(ref_data))) => {
+                ref_data.parse_from(data)
+            }
+            DataInstructions::RelayDisabledTemp(Some(Conversation::Data(ref_data))) => {
+                ref_data.parse_from(data)
+            }
+            DataInstructions::RelaySwitchedOn(Some(Conversation::Data(ref_data))) => {
+                ref_data.parse_from(data)
+            }
+            DataInstructions::RelayMonitorOn(Some(Conversation::Data(ref_data))) => {
+                ref_data.parse_from(data)
+            }
+            DataInstructions::RelayControlOn(Some(Conversation::Data(ref_data))) => {
+                ref_data.parse_from(data)
+            }
+            DataInstructions::All(Some(Conversation::Data(ref_data))) => {
+                ref_data.parse_from(data)
+            }
+            _ => {
+                Err(Errors::InstructionNotSerializable)
+            }
         }
     }
 
@@ -281,11 +338,6 @@ impl ErrorCode {
     }
 }
 
-pub struct RelativeMillis16(u16);
-pub struct RelativeSeconds8(u8);
-pub struct RelativeSeconds16(u16);
-
-
 pub enum Conversation<RQ: Request, D: Data + 'static> {
     Request(RQ),
     Data(D),
@@ -296,11 +348,19 @@ pub enum Conversation<RQ: Request, D: Data + 'static> {
 pub trait Request {  }
 
 pub trait Data {
-    fn parse(data: &[u8]) -> Result<Self, Errors> where Self: Sized;
+
+    fn parse(data: &[u8]) -> Result<Self, Errors> where Self: Sized {
+        let mut result = Self::default();
+        result.parse_from(data)?;
+        Ok(result)
+    }
+
+    fn parse_from(&mut self, data: &[u8]) -> Result<(), Errors>;
 
     fn serialize(&self, buffer: &mut TxBuffer)->Result<(), Errors>;
 
-    fn parse_from(&mut self, data: &[u8]) -> Result<(), Errors>;
+    fn default() -> Self where Self: Sized;
+
 }
 
 pub enum Response {
@@ -319,48 +379,115 @@ pub struct RelayIndexRequest {
 impl Request for RelayIndexRequest {}
 
 impl Data for RelativeSeconds {
+
     fn parse(data: &[u8]) -> Result<Self, Errors> where Self: Sized {
-        Ok(RelativeSeconds::new(get_u32(data)?))
+        Ok(RelativeSeconds::new(u32::parse(data)?))
     }
 
     fn parse_from(&mut self, data: &[u8]) -> Result<(), Errors> {
-        *self = RelativeSeconds::new(get_u32(data)?);
+        *self = RelativeSeconds::new(u32::parse(data)?);
         Ok(())
     }
 
+    #[inline(always)]
     fn serialize(&self, buffer: &mut TxBuffer) -> Result<(), Errors> {
-        let seconds: u32 = self.value();
-        for i in 0..4 {
-            buffer.add_byte(((seconds >> ((3 - i) * 8)) & 0xff) as u8)?;
-        }
-        Ok(())
+        buffer.add_u32(self.value())
+    }
+
+    fn default() -> Self where Self: Sized {
+        RelativeSeconds::new(0)
+    }
+
+}
+
+trait Extractor {
+    fn extract(data: &[u8]) -> Self;
+}
+
+impl Extractor for u8 {
+    fn extract(data: &[u8]) -> u8 {
+        data[0]
     }
 }
 
-impl Data for u32 {
-    fn parse(data: &[u8]) -> Result<Self, Errors> where Self: Sized {
-        if data.len() == 4 {
-            Ok(get_u32_force(&data[0..4]))
-        } else {
-            Err(Errors::InvalidDataSize)
-        }
+impl Extractor for u16 {
+    #[inline(always)]
+    fn extract(data: &[u8]) -> u16 {
+        (data[0] as u16) << 8 | data[1] as u16
+    }
+}
+
+impl Extractor for u32 {
+    #[inline(always)]
+    fn extract(data: &[u8]) -> u32 {
+        (data[0] as u32) << 24 | (data[1] as u32) << 16 | (data[2] as u32) << 8 | data[3] as u32
+    }
+}
+
+impl Extractor for u64 {
+    #[inline(always)]
+    fn extract(data: &[u8]) -> u64 {
+        (data[0] as u64) << 56 | (data[1] as u64) << 48 | (data[2] as u64) << 40 | (data[3] as u64) << 32 |
+            (data[4] as u64) << 24 | (data[5] as u64) << 16 | (data[6] as u64) << 8 | data[7] as u64
+    }
+}
+
+
+pub struct RelativeMillis16(u16);
+pub struct RelativeSeconds8(u8);
+pub struct RelativeSeconds16(u16);
+
+impl Extractor for RelativeMillis16 {
+
+    #[inline(always)]
+    fn extract(data: &[u8]) -> RelativeMillis16 {
+        RelativeMillis16(u16::extract(data))
     }
 
-    fn parse_from(&mut self, data: &[u8]) -> Result<(), Errors> {
-        if data.len() != 4 {
-            Err(Errors::NotEnoughDataGot)
-        } else {
-            *self = get_u32_force(&data[0..4]);
-            Ok(())
-        }
+    // #[inline(always)]
+    // fn serialize(&self, buffer: &mut TxBuffer) -> Result<(), Errors> {
+    //     buffer.add_u16(self.0)
+    // }
+
+}
+
+impl Extractor for RelativeSeconds8 {
+
+    #[inline(always)]
+    fn extract(data: &[u8]) -> RelativeSeconds8 {
+        RelativeSeconds8(u8::extract(data))
     }
 
-    fn serialize(&self, buffer: &mut TxBuffer) -> Result<(), Errors> {
-        todo!()
+    // #[inline(always)]
+    // fn serialize(&self, buffer: &mut TxBuffer) -> Result<(), Errors> {
+    //     buffer.add_u8(self.0)
+    // }
+
+}
+
+impl Extractor for RelativeSeconds16 {
+
+    #[inline(always)]
+    fn extract(data: &[u8]) -> RelativeSeconds16 {
+        RelativeSeconds16(u16::extract(data))
+    }
+
+    // #[inline(always)]
+    // fn serialize(&self, buffer: &mut TxBuffer) -> Result<(), Errors> {
+    //     buffer.add_u16(self.0)
+    // }
+
+}
+
+impl Extractor for BitsU64 {
+    #[inline(always)]
+    fn extract(data: &[u8]) -> Self {
+        BitsU64::new(u64::extract(data))
     }
 }
 
 impl Data for u8 {
+
     fn parse(data: &[u8]) -> Result<Self, Errors> where Self: Sized {
         if data.len() != 1 {
             return Err(Errors::InvalidDataSize);
@@ -370,17 +497,71 @@ impl Data for u8 {
     }
 
     fn parse_from(&mut self, data: &[u8]) -> Result<(), Errors> {
-        if data.len() != 1 {
-            Err(Errors::NotEnoughDataGot)
-        } else {
-            *self = data[0];
+        *self = Self::parse(data)?;
+        Ok(())
+    }
+
+    #[inline(always)]
+    fn serialize(&self, buffer: &mut TxBuffer) -> Result<(), Errors> {
+        buffer.add_u8(*self)
+    }
+
+    fn default() -> Self where Self: Sized {
+        0
+    }
+
+}
+
+impl Data for u16 {
+
+        fn parse(data: &[u8]) -> Result<Self, Errors> where Self: Sized {
+            if data.len() == 2 {
+                Ok(u16::extract(&data[0..2]))
+            } else {
+                Err(Errors::InvalidDataSize)
+            }
+        }
+
+        fn parse_from(&mut self, data: &[u8]) -> Result<(), Errors> {
+            *self = Self::parse(data)?;
             Ok(())
+        }
+
+        #[inline(always)]
+        fn serialize(&self, buffer: &mut TxBuffer) -> Result<(), Errors> {
+            buffer.add_u16(*self)
+        }
+
+        fn default() -> Self where Self: Sized {
+            0
+        }
+
+}
+
+impl Data for u32 {
+
+    fn parse(data: &[u8]) -> Result<Self, Errors> where Self: Sized {
+        if data.len() == 4 {
+            Ok(u32::extract(&data[0..4]))
+        } else {
+            Err(Errors::InvalidDataSize)
         }
     }
 
-    fn serialize(&self, buffer: &mut TxBuffer) -> Result<(), Errors> {
-        todo!()
+    fn parse_from(&mut self, data: &[u8]) -> Result<(), Errors> {
+        *self = Self::parse(data)?;
+        Ok(())
     }
+
+    #[inline(always)]
+    fn serialize(&self, buffer: &mut TxBuffer) -> Result<(), Errors> {
+        buffer.add_u32(*self)
+    }
+
+    fn default() -> Self where Self: Sized {
+        0
+    }
+
 }
 
 pub struct AllData {
@@ -404,9 +585,6 @@ impl AllData {
 }
 
 impl Data for AllData {
-    fn parse(data: &[u8]) -> Result<Self, Errors> where Self: Sized {
-        panic!("Not implemented");
-    }
 
     fn parse_from(&mut self, data: &[u8]) -> Result<(), Errors> {
 
@@ -434,8 +612,20 @@ impl Data for AllData {
     }
 
     fn serialize(&self, buffer: &mut TxBuffer) -> Result<(), Errors> {
-        todo!()
+        self.id.serialize(buffer)?;
+        buffer.add_u8(self.interrupt_pin)?;
+        buffer.add_u8(self.relays_count)?;
+        buffer.add_u64(self.state_data.bits)?;
+        for setting in self.relays_settings {
+            setting.serialize(buffer)?;
+        }
+        Ok(())
     }
+
+    fn default() -> Self where Self: Sized {
+        Self::new()
+    }
+
 }
 
 pub struct SwitchCountingSettings {
@@ -458,41 +648,29 @@ impl SwitchCountingSettings {
         }
     }
 
-    fn parse(data: &[u8]) -> Result<Self, Errors> {
-        if data.len() < 3 {
-            return Err(Errors::NotEnoughDataGot)
-        } else {
-            let switch_limit_interval = data[0] as u16 + ((data[1] as u16) << 8);
-            let max_switch_count = data[2];
-            Ok(Self::create(switch_limit_interval, max_switch_count))
-        }
-    }
 }
 
 impl Data for SwitchCountingSettings {
-    fn parse(data: &[u8]) -> Result<Self, Errors> {
-        if data.len() != 3 {
-            return Err(Errors::DataCorrupted)
-        } else {
-            let switch_limit_interval = data[0] as u16 + ((data[1] as u16) << 8);
-            let max_switch_count = data[2];
-            Ok(Self::create(switch_limit_interval, max_switch_count))
-        }
-    }
 
     fn parse_from(&mut self, data: &[u8]) -> Result<(), Errors> {
         if data.len() != 3 {
-            return Err(Errors::DataCorrupted)
+            return Err(Errors::InvalidDataSize)
         } else {
-            let switch_limit_interval = data[0] as u16 + ((data[1] as u16) << 8);
-            let max_switch_count = data[2];
-            Ok(Self::create(switch_limit_interval, max_switch_count))
+            self.switch_limit_interval = RelativeSeconds16::extract(&data[0..2]);
+            self.max_switch_count = data[2];
+            Ok(())
         }
     }
 
     fn serialize(&self, buffer: &mut TxBuffer) -> Result<(), Errors> {
-        todo!()
+        buffer.add_u16(self.switch_limit_interval.0)?;
+        buffer.add_u8(self.max_switch_count)
     }
+
+    fn default() -> Self where Self: Sized {
+        Self::new()
+    }
+
 }
 
 pub struct StateSwitchDatas {
@@ -501,6 +679,7 @@ pub struct StateSwitchDatas {
 }
 
 impl StateSwitchDatas {
+
     pub const fn new() -> Self {
         Self {
             data: [StateSwitchData::new(); SWITCHES_DATA_BUFFER_SIZE],
@@ -525,16 +704,10 @@ impl StateSwitchDatas {
             Ok(())
         }
     }
+
 }
 
 impl Data for StateSwitchDatas {
-    fn parse(data: &[u8]) -> Result<Self, Errors> where Self: Sized {
-        panic!("Not implemented");
-    }
-
-    fn serialize(&self, buffer: &mut TxBuffer) -> Result<(), Errors> {
-        todo!()
-    }
 
     fn parse_from(&mut self, data: &[u8]) -> Result<(), Errors> {
         if data.len() < 1 {
@@ -542,17 +715,32 @@ impl Data for StateSwitchDatas {
         }
         let relays_count = data[0];
         if (data.len() as u8) != relays_count * 4 + 1 {
-            return Err(Errors::DataCorrupted);
+            return Err(Errors::InvalidDataSize);
         }
         self.set_count(relays_count as usize)?;
         for i in 0..relays_count as usize {
             let pos = 1 + i * 5;
             let switch_count_data = data[pos];
-            let timestamp = get_u32_force(&data[pos + 1..pos + 5]);
+            let timestamp = u32::extract(&data[pos + 1..pos + 5]);
             self.set_data(i, StateSwitchData::create(switch_count_data, timestamp))?;
         }
         Ok(())
     }
+
+    fn serialize(&self, buffer: &mut TxBuffer) -> Result<(), Errors> {
+        buffer.add_u8(self.count as u8)?;
+        for i in 0..self.count {
+            let data = &self.data[i];
+            buffer.add_u8(data.state.bits)?;
+            data.time_stamp.serialize(buffer)?;
+        }
+        Ok(())
+    }
+
+    fn default() -> Self where Self: Sized {
+        Self::new()
+    }
+
 }
 
 #[derive(Copy, Clone)]
@@ -562,18 +750,21 @@ pub struct StateSwitchData {
 }
 
 impl StateSwitchData {
+
     pub const fn new() -> Self {
         Self {
             state: BitsU8::new(0),
             time_stamp: RelativeSeconds::new(0),
         }
     }
+
     pub fn create(data: u8, timestamp: u32) -> Self {
         Self {
             state: BitsU8::new(data),
             time_stamp: RelativeSeconds::new(timestamp),
         }
     }
+
 }
 
 pub struct ContactsWaitData {
@@ -610,9 +801,6 @@ impl ContactsWaitData {
 }
 
 impl Data for ContactsWaitData {
-    fn parse(data: &[u8]) -> Result<Self, Errors> where Self: Sized {
-        panic!("Not implemented");
-    }
 
     fn parse_from(&mut self, data: &[u8]) -> Result<(), Errors> {
         if data.len() < 1 {
@@ -625,15 +813,24 @@ impl Data for ContactsWaitData {
         self.update_count(relays_count as usize)?;
         for i in 0..relays_count as usize {
             let pos = 1 + i * 4;
-            let timestamp = get_u32_force(&data[pos..pos + 4]);
+            let timestamp = u32::extract(&data[pos..pos + 4]);
             self.update_timestamp(i, timestamp)?;
         }
         Ok(())
     }
 
     fn serialize(&self, buffer: &mut TxBuffer) -> Result<(), Errors> {
-        todo!()
+        buffer.add_u8(self.relays_count as u8)?;
+        for i in 0..self.relays_count {
+            self.contacts_wait_start_timestamps[i].serialize(buffer)?;
+        }
+        Ok(())
     }
+
+    fn default() -> Self where Self: Sized {
+        Self::new()
+    }
+
 }
 
 pub struct FixDataContainer {
@@ -642,6 +839,7 @@ pub struct FixDataContainer {
 }
 
 impl FixDataContainer {
+
     fn update_count(&mut self, new_count: usize) -> Result<(), Errors> {
         if new_count > MAX_RELAYS_COUNT {
             Err(Errors::RelayCountOverflow)
@@ -666,6 +864,7 @@ impl FixDataContainer {
             fix_data_count: 0,
         }
     }
+
     pub fn add_fix_data(&mut self, fix_data: FixData) -> Result<(), Errors> {
         if self.fix_data_count < MAX_RELAYS_COUNT {
             self.fix_data[self.fix_data_count as usize] = fix_data;
@@ -675,6 +874,7 @@ impl FixDataContainer {
             Err(Errors::RelayIndexOutOfRange)
         }
     }
+
     pub fn get_fix_data(&self, index: usize) -> Option<&FixData> {
         if index < self.fix_data_count {
             Some(&self.fix_data[index])
@@ -682,37 +882,47 @@ impl FixDataContainer {
             None
         }
     }
+
     pub fn get_fix_data_count(&self) -> usize {
         self.fix_data_count
     }
+
 }
 
 impl Data for FixDataContainer {
-    fn parse(data: &[u8]) -> Result<Self, Errors> where Self: Sized {
-        panic!("Not implemented");
-    }
 
     fn parse_from(&mut self, data: &[u8]) -> Result<(), Errors> {
         if data.len() < 1 {
             return Err(Errors::NotEnoughDataGot);
         }
-        let relays_count = data[0];
-        if (data.len() as u8) < relays_count * 5 + 1 {
+        let fix_data_count = data[0];
+        if (data.len() as u8) < fix_data_count * 5 + 1 {
             return Err(Errors::NotEnoughDataGot);
         }
-        self.update_count(relays_count as usize)?;
-        for i in 0..relays_count as usize {
+        self.update_count(fix_data_count as usize)?;
+        for i in 0..fix_data_count as usize {
             let pos = 1 + i * 5;
             let try_count = data[pos];
-            let try_time = (data[pos + 1] as u32) << 8 | data[pos + 2] as u32;
+            let try_time = u32::extract(&data[pos + 1..pos + 5]);
             self.update_data(i, try_count, try_time)?;
         }
         Ok(())
     }
 
     fn serialize(&self, buffer: &mut TxBuffer) -> Result<(), Errors> {
-        todo!()
+        buffer.add_u8(self.fix_data_count as u8)?;
+        for i in 0..self.fix_data_count {
+            let fix_data = &self.fix_data[i];
+            buffer.add_u8(fix_data.fix_try_count)?;
+            fix_data.fix_last_try_time.serialize(buffer)?;
+        }
+        Ok(())
     }
+
+    fn default() -> Self where Self: Sized {
+        Self::new()
+    }
+
 }
 
 #[derive(Copy, Clone)]
@@ -722,6 +932,7 @@ pub struct FixData {
 }
 
 impl FixData {
+
     pub const fn new() -> Self {
         Self {
             fix_try_count: 0,
@@ -729,23 +940,24 @@ impl FixData {
         }
     }
 
-    #[inline(always)]
     pub fn create(fix_try_count: u8, fix_last_try_time: u32) -> Self {
         Self {
             fix_try_count,
             fix_last_try_time: RelativeSeconds::new(fix_last_try_time),
         }
     }
+
 }
 
 pub struct CyclesStatistics {
     min_cycle_duration: RelativeMillis16,
     max_cycle_duration: RelativeMillis16,
     avg_cycle_duration: RelativeMillis16,
-    cycles_count: u32,
+    cycles_count: u64,
 }
 
 impl CyclesStatistics {
+
     pub fn default() -> Self {
         Self {
             min_cycle_duration: RelativeMillis16(0),
@@ -754,7 +966,8 @@ impl CyclesStatistics {
             cycles_count: 0,
         }
     }
-    pub fn create(min_cycle_duration: u16, max_cycle_duration: u16, avg_cycle_duration: u16, cyles_count: u32) -> Self {
+
+    pub fn create(min_cycle_duration: u16, max_cycle_duration: u16, avg_cycle_duration: u16, cyles_count: u64) -> Self {
         Self {
             min_cycle_duration: RelativeMillis16(min_cycle_duration),
             max_cycle_duration: RelativeMillis16(max_cycle_duration),
@@ -762,33 +975,35 @@ impl CyclesStatistics {
             cycles_count: cyles_count,
         }
     }
+
 }
 
 impl Data for CyclesStatistics {
-    fn parse(data: &[u8]) -> Result<Self, Errors> {
-        if data.len() < 10 {
-            Err(Errors::NotEnoughDataGot)
+
+    fn parse_from(&mut self, data: &[u8]) -> Result<(), Errors> {
+        if data.len() != 14 {
+            Err(Errors::InvalidDataSize)
         } else {
-            let min_cycle_duration = (data[0] as u16) << 8 | data[1] as u16;
-            let max_cycle_duration = (data[2] as u16) << 8 | data[3] as u16;
-            let avg_cycle_duration = (data[4] as u16) << 8 | data[5] as u16;
-            let mut cycles_count = get_u32_force(data);
-            if data.len() >= 14 {
-                if data[10] > 0 || data[11] > 0 || data[12] > 0 || data[13] > 0 {
-                    cycles_count |= 0x80000000;
-                }
-            }
-            Ok(CyclesStatistics::create(min_cycle_duration, max_cycle_duration, avg_cycle_duration, cycles_count))
+            self.min_cycle_duration = RelativeMillis16::extract( &data[0..2]);
+            self.max_cycle_duration = RelativeMillis16::extract( &data[2..4]);
+            self.avg_cycle_duration = RelativeMillis16::extract( &data[4..6]);
+            self.cycles_count = u64::extract(&data[6..14]);
+            Ok(())
         }
     }
 
-    fn parse_from(&mut self, data: &[u8]) -> Result<(), Errors> {
-        todo!()
+    fn serialize(&self, buffer: &mut TxBuffer) -> Result<(), Errors> {
+        buffer.add_u16(self.min_cycle_duration.0)?;
+        buffer.add_u16(self.max_cycle_duration.0)?;
+        buffer.add_u16(self.avg_cycle_duration.0)?;
+        buffer.add_u64(self.cycles_count)?;
+        Ok(())
     }
 
-    fn serialize(&self, buffer: &mut TxBuffer) -> Result<(), Errors> {
-        todo!()
+    fn default() -> Self where Self: Sized {
+        Self::default()
     }
+
 }
 
 pub struct StateFixSettings {
@@ -799,26 +1014,35 @@ pub struct StateFixSettings {
 }
 
 impl Data for StateFixSettings {
-    fn parse(data: &[u8]) -> Result<Self, Errors> {
-        if data.len() < 6 {
-            Err(Errors::NotEnoughDataGot)
+
+    fn parse_from(&mut self, data: &[u8]) -> Result<(), Errors> {
+        if data.len() != 6 {
+            Err(Errors::InvalidDataSize)
         } else {
-            Ok(Self {
-                switch_try_duration: RelativeMillis16(((data[0] as u16) << 8) | data[1] as u16),
-                switch_try_count: data[2],
-                wait_delay: RelativeSeconds8(data[3]),
-                contact_ready_wait_delay: RelativeMillis16(((data[4] as u16) << 8) | data[5] as u16),
-            })
+            self.switch_try_duration = RelativeMillis16::extract(&data[0..2]);
+            self.switch_try_count = data[2];
+            self.wait_delay = RelativeSeconds8(data[3]);
+            self.contact_ready_wait_delay = RelativeMillis16::extract(&data[4..6]);
+            Ok(())
         }
     }
 
-    fn parse_from(&mut self, data: &[u8]) -> Result<(), Errors> {
-        todo!()
+    fn serialize(&self, buffer: &mut TxBuffer) -> Result<(), Errors> {
+        buffer.add_u16(self.switch_try_duration.0)?;
+        buffer.add_u8(self.switch_try_count)?;
+        buffer.add_u8(self.wait_delay.0)?;
+        buffer.add_u16(self.contact_ready_wait_delay.0)
     }
 
-    fn serialize(&self, buffer: &mut TxBuffer) -> Result<(), Errors> {
-        todo!()
+    fn default() -> Self where Self: Sized {
+        Self {
+            switch_try_duration: RelativeMillis16(0),
+            switch_try_count: 0,
+            wait_delay: RelativeSeconds8(0),
+            contact_ready_wait_delay: RelativeMillis16(0),
+        }
     }
+
 }
 
 pub struct State {
@@ -847,29 +1071,33 @@ impl State {
 }
 
 impl Data for State {
-    fn parse(data: &[u8]) -> Result<Self, Errors> {
+
+    fn parse_from(&mut self, data: &[u8]) -> Result<(), Errors> {
         if data.len() < 1 {
             return Err(Errors::NotEnoughDataGot);
         }
-        let count = data[0];
-        if count > 16 {
+        self.count = data[0];
+        if self.count > 16 {
             return Err(Errors::RelayIndexOutOfRange);
         }
-        let pairs_count = count as usize / 2;
+        let pairs_count = self.count as usize / 2;
         if data.len() != 1 + pairs_count {
             return Err(Errors::InvalidDataSize);
         }
         let state_data = Self::parse_state_data_force(pairs_count, &data[1..]);
-        Ok(Self{ count, data: BitsU64::new(state_data) })
-    }
-
-    fn parse_from(&mut self, data: &[u8]) -> Result<(), Errors> {
-        todo!()
+        self.count;
+        self.data = BitsU64::new(state_data);
+        Ok(())
     }
 
     fn serialize(&self, buffer: &mut TxBuffer) -> Result<(), Errors> {
-        todo!()
+        buffer.add_u64(self.data.bits)
     }
+
+    fn default() -> Self where Self: Sized {
+        Self::new()
+    }
+
 }
 
 pub struct RelaySingleState {
@@ -877,6 +1105,7 @@ pub struct RelaySingleState {
 }
 
 impl RelaySingleState {
+
     pub fn new (value: u8) -> Self {
         Self { data: BitsU8::new(value) }
     }
@@ -888,24 +1117,28 @@ impl RelaySingleState {
     pub fn is_set(&self) -> bool {
         self.data.bits(4, 7).unwrap() > 0
     }
+
 }
 
 impl Data for RelaySingleState {
-    fn parse(data: &[u8]) -> Result<Self, Errors> {
+
+    fn parse_from(&mut self, data: &[u8]) -> Result<(), Errors> {
         if data.len() == 1 {
-            Ok(Self::new(data[0]))
+            self.data = BitsU8::new(data[0]);
+            Ok(())
         } else {
             Err(Errors::InvalidDataSize)
         }
     }
 
-    fn parse_from(&mut self, data: &[u8]) -> Result<(), Errors> {
-        todo!()
+    fn serialize(&self, buffer: &mut TxBuffer) -> Result<(), Errors> {
+        buffer.add_u8(self.data.bits)
     }
 
-    fn serialize(&self, buffer: &mut TxBuffer) -> Result<(), Errors> {
-        todo!()
+    fn default() -> Self where Self: Sized {
+        Self::new(0)
     }
+
 }
 
 pub struct RelayState {
@@ -916,18 +1149,6 @@ impl RelayState {
 
     pub fn new() -> Self {
         RelayState { data: BitsU8::new(0) }
-    }
-
-    pub fn from_u8(raw_data: u8) -> Self {
-        RelayState { data: BitsU8::new(raw_data) }
-    }
-
-    pub fn parse(data: &[u8]) -> Result<Self, Errors> {
-        if data.len() < 1 {
-            return Err(Errors::NotEnoughDataGot);
-        } else {
-            Ok(Self::from_u8(data[0]))
-        }
     }
 
     pub fn create(relay_index: u8, on: bool, disabled: bool) -> Result<Self, Errors> {
@@ -977,21 +1198,24 @@ impl RelayState {
 }
 
 impl Data for RelayState {
-    fn parse(data: &[u8]) -> Result<Self, Errors> {
+
+    fn parse_from(&mut self, data: &[u8]) -> Result<(), Errors> {
         if data.len() == 1 {
-            Ok(Self::from_u8(data[0]))
+            self.data = BitsU8::new(data[0]);
+            Ok(())
         } else {
             Err(Errors::InvalidDataSize)
         }
     }
 
-    fn parse_from(&mut self, data: &[u8]) -> Result<(), Errors> {
-        todo!()
+    fn serialize(&self, buffer: &mut TxBuffer) -> Result<(), Errors> {
+        buffer.add_u8(self.data.bits)
     }
 
-    fn serialize(&self, buffer: &mut TxBuffer) -> Result<(), Errors> {
-        todo!()
+    fn default() -> Self where Self: Sized {
+        Self::new()
     }
+
 }
 
 #[derive(Copy, Clone)]
@@ -1016,6 +1240,7 @@ pub struct RelaySettings {
 }
 
 impl RelaySettings {
+
     pub const fn new() -> Self {
         Self {
             control_pin: PinData::new(),
@@ -1023,6 +1248,7 @@ impl RelaySettings {
             set_pin: PinData::new(),
         }
     }
+
     pub fn create(control_pin: u8, monitor_pin: u8, set_pin: u8) -> Self {
         Self {
             control_pin: PinData::create(control_pin),
@@ -1030,6 +1256,13 @@ impl RelaySettings {
             set_pin: PinData::create(set_pin),
         }
     }
+
+    fn serialize(&self, buffer: &mut TxBuffer) -> Result<(), Errors> {
+        buffer.add_u8(self.set_pin.data)?;
+        buffer.add_u8(self.monitor_pin.data)?;
+        buffer.add_u8(self.control_pin.data)
+    }
+
 }
 
 pub struct RelaysSettings {
@@ -1050,7 +1283,6 @@ impl RelaysSettings {
         }
     }
 
-    #[inline(always)]
     fn set_relay_count(&mut self, relays_count: usize) -> Result<(), Errors> {
         if relays_count > MAX_RELAYS_COUNT {
             return Err(Errors::RelayIndexOutOfRange);
@@ -1059,7 +1291,6 @@ impl RelaysSettings {
         Ok(())
     }
 
-    #[inline(always)]
     fn set_relay_settings(&mut self, relay_index: usize, relay_settings: RelaySettings) -> Result<(), Errors> {
         if relay_index >= self.relays_count {
             return Err(Errors::RelayIndexOutOfRange);
@@ -1082,19 +1313,6 @@ impl RelaysSettings {
 }
 
 impl Data for RelaysSettings {
-    fn parse(data: &[u8]) -> Result<Self, Errors> {
-        panic!("Not implemented");
-    }
-
-    fn serialize(&self, buffer: &mut TxBuffer) -> Result<(), Errors> {
-        buffer.add_byte(self.relays.len() as u8)?;
-        for setting in self.relays {
-            buffer.add_byte(setting.set_pin.data)?;
-            buffer.add_byte(setting.monitor_pin.data)?;
-            buffer.add_byte(setting.control_pin.data)?;
-        }
-        Ok(())
-    }
 
     fn parse_from(&mut self, data: &[u8]) -> Result<(), Errors> {
         if data.len() < 1 {
@@ -1111,16 +1329,17 @@ impl Data for RelaysSettings {
         Self::parse_items(&data[1..], relays_count, &mut self.relays)?;
         Ok(())
     }
-}
 
-fn get_u32(data: &[u8]) -> Result<u32, Errors> {
-    if data.len() < 4 {
-        Err(Errors::NotEnoughDataGot)
-    } else {
-        Ok(get_u32_force(&data[0..4]))
+    fn serialize(&self, buffer: &mut TxBuffer) -> Result<(), Errors> {
+        buffer.add_u8(self.relays.len() as u8)?;
+        for setting in self.relays {
+            setting.serialize(buffer)?;
+        }
+        Ok(())
     }
-}
 
-fn get_u32_force(data: &[u8]) -> u32 {
-    (data[0] as u32) << 24 | (data[1] as u32) << 16 | (data[2] as u32) << 8 | data[3] as u32
+    fn default() -> Self where Self: Sized {
+        Self::new()
+    }
+
 }
