@@ -1,5 +1,6 @@
 pub mod domain;
 
+use alloc::boxed::Box;
 use core::mem::size_of;
 use cortex_m_semihosting::hprintln;
 use stm32f4xx_hal::dma::{ChannelX, MemoryToPeripheral, PeripheralToMemory};
@@ -111,7 +112,7 @@ impl SentRequest {
     }
 }
 
-const REQUESTS_COUNT: usize = 4;
+const MAX_REQUESTS_COUNT: usize = 4;
 
 struct TransmitterToSlaveController<U, TxStream, const TX_CHANNEL: u8>
     where
@@ -121,8 +122,9 @@ struct TransmitterToSlaveController<U, TxStream, const TX_CHANNEL: u8>
         ChannelX<TX_CHANNEL>: Channel,
 {
     tx: TxTransfer<U, TxStream, TX_CHANNEL>,
-    sent_requests: [Option<SentRequest>; REQUESTS_COUNT],
+    sent_requests: [Option<SentRequest>; MAX_REQUESTS_COUNT],
     requests_count: usize,
+    request_needs_cache_send: bool,
 }
 
 impl <U, TxStream, const TX_CHANNEL: u8> TransmitterToSlaveController<U, TxStream, TX_CHANNEL>
@@ -137,13 +139,19 @@ impl <U, TxStream, const TX_CHANNEL: u8> TransmitterToSlaveController<U, TxStrea
             tx,
             sent_requests: [None, None, None, None],
             requests_count: 0,
+            request_needs_cache_send: false,
         }
     }
 
     pub fn send_request(&mut self, operation: Operation, instruction: DataInstructions, timestamp: RelativeMillis) -> Result<(), Errors> {
-        if self.requests_count == REQUESTS_COUNT {
-            return Err(Errors::RequestslLimitReached);
+        if self.requests_count == MAX_REQUESTS_COUNT {
+            return Err(Errors::RequestsLimitReached);
         }
+        let is_request_needs_cache = request_needs_cache(instruction.code());
+        if is_request_needs_cache && self.request_needs_cache_send {
+            return Err(Errors::RequestsNeedsCacheAlreadySent);
+        }
+
         let result = self.tx.start_transfer(|buffer| {
             buffer.clear();
             buffer.add_u8(Operation::None as u8)?;
@@ -153,6 +161,10 @@ impl <U, TxStream, const TX_CHANNEL: u8> TransmitterToSlaveController<U, TxStrea
         });
         self.sent_requests[self.requests_count] = Some(SentRequest::new(operation, instruction, timestamp));
         self.requests_count += 1;
+        if is_request_needs_cache {
+            self.request_needs_cache_send = true;
+        }
+
         result
     }
 
@@ -169,6 +181,7 @@ impl <U, TxStream, const TX_CHANNEL: u8> TransmitterToSlaveController<U, TxStrea
     pub fn on_dma_interrupts(&mut self) {
         self.tx.on_dma_interrupts();
     }
+
 }
 
 struct ReceiverFromSlaveController<U, RxStream, const RX_CHANNEL: u8, SR>
@@ -216,7 +229,7 @@ impl <U, RxStream, const RX_CHANNEL: u8, SR> ReceiverFromSlaveController<U, RxSt
     {
         let ReceiverFromSlaveController { rx, signal_receiver, static_buffers_idx } = self;
         rx.on_rx_transfer_interrupt(|data| {
-            hprintln!("rx6 got");
+            hprintln!("rx got");
             if data.len() > 3 && data[0] == Operation::None as u8 {
                 let operation_code = data[1];
                 let instruction_code = data[2];
@@ -224,7 +237,7 @@ impl <U, RxStream, const RX_CHANNEL: u8, SR> ReceiverFromSlaveController<U, RxSt
                     if instruction_code == Signals::GetTimeStamp as u8 {
                         let timestamp = time_src();
                         tx.send_request(Operation::Set,
-                            DataInstructions::RemoteTimestamp(Some(Conversation::Data(timestamp.seconds()))), timestamp)
+                            DataInstructions::RemoteTimestamp(Conversation::Data(timestamp.seconds())), timestamp)
                     } else {
                         let instruction = if instruction_code == Signals::MonitoringStateChanged as u8 {
                             Some(Signals::MonitoringStateChanged)
@@ -284,6 +297,9 @@ impl <U, RxStream, const RX_CHANNEL: u8, SR> ReceiverFromSlaveController<U, RxSt
                                             }
                                         }
                                     }
+                                    if operation_code == Operation::Response as u8 && request_needs_cache(request.instruction.code()) {
+                                        tx.request_needs_cache_send = false;
+                                    }
                                     let mut next_pos = i + 1;
                                     while next_pos < tx.requests_count {
                                         tx.sent_requests.swap(next_pos - 1, next_pos);
@@ -314,36 +330,98 @@ impl <U, RxStream, const RX_CHANNEL: u8, SR> ReceiverFromSlaveController<U, RxSt
     }
 }
 
-unsafe fn get_statically_cashed(instruction_code: u8, static_buffers_idx: usize) -> Option<DataInstructions> {
+pub fn init_slave_controllers() {
+    init_cache_getters();
+}
+
+unsafe fn get_data_container_cashed<RQ: Request, D: Data + 'static>(static_buffers_idx: usize) -> Conversation<RQ, D> {
     let buf = &mut STATIC_BUFFERS[static_buffers_idx];
-    if instruction_code == DataInstructionCodes::Settings as u8 {
-        let raw_ptr  = buf.as_mut_ptr() as *mut RelaysSettings;
-        Some(DataInstructions::Settings(Some(Conversation::DataCashed(&mut *raw_ptr))))
-    } else if instruction_code == DataInstructionCodes::ContactWaitData as u8 {
-        let raw_ptr  = buf.as_mut_ptr() as *mut ContactsWaitData;
-        Some(DataInstructions::ContactWaitData(Some(Conversation::DataCashed(&mut *raw_ptr))))
-    } else if instruction_code == DataInstructionCodes::SwitchData as u8 {
-        let raw_ptr  = buf.as_mut_ptr() as *mut StateSwitchDatas;
-        Some(DataInstructions::SwitchData(Some(Conversation::DataCashed(&mut *raw_ptr))))
-    } else if instruction_code == DataInstructionCodes::FixData as u8 {
-        let raw_ptr  = buf.as_mut_ptr() as *mut FixDataContainer;
-        Some(DataInstructions::FixData(Some(Conversation::DataCashed(&mut *raw_ptr))))
-    } else if instruction_code == DataInstructionCodes::All as u8 {
-        let raw_ptr  = buf.as_mut_ptr() as *mut AllData;
-        Some(DataInstructions::All(Some(Conversation::DataCashed(&mut *raw_ptr))))
-    } else {
-        None
+    let raw_ptr  = buf.as_mut_ptr() as *mut D;
+    Conversation::DataCashed(&mut *raw_ptr)
+}
+
+trait CashedInstructionGetter {
+    fn get(&self, static_buffers_idx: usize) -> DataInstructions;
+}
+
+#[derive(Copy, Clone)]
+struct RelasySettingsCashedInstructionGetter;
+impl CashedInstructionGetter for RelasySettingsCashedInstructionGetter {
+    fn get(&self, static_buffers_idx: usize) -> DataInstructions {
+        DataInstructions::Settings(unsafe {get_data_container_cashed(static_buffers_idx)})
+    }
+}
+
+#[derive(Copy, Clone)]
+struct ContactsWaitDataCashedInstructionGetter;
+impl CashedInstructionGetter for ContactsWaitDataCashedInstructionGetter {
+    fn get(&self, static_buffers_idx: usize) -> DataInstructions {
+        DataInstructions::ContactWaitData(unsafe {get_data_container_cashed(static_buffers_idx)})
+    }
+}
+
+#[derive(Copy, Clone)]
+struct StateSwitchDataCashedInstructionGetter;
+impl CashedInstructionGetter for StateSwitchDataCashedInstructionGetter {
+    fn get(&self, static_buffers_idx: usize) -> DataInstructions {
+        DataInstructions::SwitchData(unsafe {get_data_container_cashed(static_buffers_idx)})
+    }
+}
+
+#[derive(Copy, Clone)]
+struct FixDataContainerCashedInstructionGetter;
+impl CashedInstructionGetter for FixDataContainerCashedInstructionGetter {
+    fn get(&self, static_buffers_idx: usize) -> DataInstructions {
+        DataInstructions::FixData(unsafe {get_data_container_cashed(static_buffers_idx)})
+    }
+}
+
+#[derive(Copy, Clone)]
+struct AllDataCashedInstructionGetter;
+impl CashedInstructionGetter for AllDataCashedInstructionGetter {
+    fn get(&self, static_buffers_idx: usize) -> DataInstructions {
+        DataInstructions::All(unsafe {get_data_container_cashed(static_buffers_idx)})
+    }
+}
+
+
+const INSTRUCTIONS_COUNT: usize = DataInstructionCodes::Last as usize;
+
+static mut df: [Option<Box<dyn CashedInstructionGetter>>; INSTRUCTIONS_COUNT] = [None, None, None, None, None, None, None,
+    None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None];
+
+fn init_cache_getters() {
+    unsafe {
+        df[DataInstructionCodes::Settings as usize] = Some(Box::new(RelasySettingsCashedInstructionGetter));
+        df[DataInstructionCodes::ContactWaitData as usize] = Some(Box::new(ContactsWaitDataCashedInstructionGetter));
+        df[DataInstructionCodes::SwitchData as usize] = Some(Box::new(StateSwitchDataCashedInstructionGetter));
+        df[DataInstructionCodes::FixData as usize] = Some(Box::new(FixDataContainerCashedInstructionGetter));
+        df[DataInstructionCodes::All as usize] = Some(Box::new(AllDataCashedInstructionGetter));
+    }
+}
+
+fn request_needs_cache(instruction: DataInstructionCodes) -> bool {
+    match cache_getter(instruction) {
+        Some(_) => { true },
+        None => { false }
+    }
+}
+
+fn cache_getter(code: DataInstructionCodes) -> Option< &'static Box<dyn CashedInstructionGetter>> {
+    unsafe {
+        df[code as usize].as_ref()
     }
 }
 
 fn parse_response(instruction_code: u8, data: &[u8], static_buffers_idx: usize) -> Result<DataInstructions, Errors> {
-    let mut cache = unsafe { get_statically_cashed(instruction_code, static_buffers_idx) };
-    match cache {
-        Some(mut instruction) => {
-            instruction.parse_from(data)?;
-            Ok(instruction)
+    let instruction = DataInstructionCodes::get(instruction_code)?;
+    match cache_getter(instruction) {
+        Some(getter) => {
+            let mut cached_instruction = getter.get(static_buffers_idx);
+            cached_instruction.parse_from(data)?;
+            Ok(cached_instruction)
         },
-        None => DataInstructions::parse(instruction_code, data)
+        None => Ok(DataInstructions::parse(instruction, data)?)
     }
 }
 

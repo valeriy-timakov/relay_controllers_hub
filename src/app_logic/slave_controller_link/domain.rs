@@ -41,6 +41,7 @@ pub enum Commands {
 }
 
 #[repr(u8)]
+#[derive(Copy, Clone, PartialEq)]
 pub enum DataInstructionCodes {
     None = 0x00,
     Settings = 0x01,
@@ -63,31 +64,79 @@ pub enum DataInstructionCodes {
     RelayMonitorOn = 0x0c,
     RelayControlOn = 0x0d,
     All = 0x0e,
+    Last = 0x19,
     Unknown = 0xff,
+}
+
+impl DataInstructionCodes {
+    pub fn get(code_value: u8) -> Result<Self, Errors> {
+        if code_value == Self::RemoteTimestamp as u8 {
+            Ok(Self::RemoteTimestamp)
+        } else if code_value == Self::CurrentTime as u8 {
+            Ok(Self::CurrentTime)
+        } else if code_value == Self::Id as u8 {
+            Ok(Self::Id)
+        } else if code_value == Self::Version as u8 {
+            Ok(Self::Version)
+        } else if code_value == Self::StateFixSettings as u8 {
+            Ok(Self::StateFixSettings)
+        } else if code_value == Self::RelayState as u8 {
+            Ok(Self::RelayState)
+        } else if code_value == Self::State as u8 {
+            Ok(Self::State)
+        } else if code_value == Self::CyclesStatistics as u8 {
+            Ok(Self::CyclesStatistics)
+        } else if code_value == Self::FixData as u8 {
+            Ok(Self::FixData)
+        } else if code_value == Self::Settings as u8 {
+            Ok(Self::Settings)
+            //v2 instructions
+        } else if code_value == Self::ContactWaitData as u8 {
+            Ok(Self::ContactWaitData)
+        } else if code_value == Self::SwitchData as u8 {
+            Ok(Self::SwitchData)
+        } else if code_value == Self::InterruptPin as u8 {
+            Ok(Self::InterruptPin)
+        } else if code_value == Self::SwitchCountingSettings as u8 {
+            Ok(Self::SwitchCountingSettings)
+        } else if code_value == Self::RelayDisabledTemp as u8 {
+            Ok(Self::RelayDisabledTemp)
+        } else if code_value == Self::RelaySwitchedOn as u8 {
+            Ok(Self::RelaySwitchedOn)
+        } else if code_value == Self::RelayMonitorOn as u8 {
+            Ok(Self::RelayMonitorOn)
+        } else if code_value == Self::RelayControlOn as u8 {
+            Ok(Self::RelayControlOn)
+        } else if code_value == Self::All as u8 {
+            Ok(Self::All)
+        } else {
+            Err(Errors::InstructionNotRecognized(code_value))
+        }
+    }
 }
 
 #[repr(u8)]
 pub enum DataInstructions {
-    Settings(Option<Conversation<EmptyRequest, RelaysSettings>>) = DataInstructionCodes::Settings as u8,
-    State(Option<Conversation<EmptyRequest, State>>) = DataInstructionCodes::State as u8,
-    Id(Option<Conversation<EmptyRequest, u32>>) = DataInstructionCodes::Id as u8,
-    InterruptPin(Option<Conversation<EmptyRequest, u8>>) = DataInstructionCodes::InterruptPin as u8,
-    RemoteTimestamp(Option<Conversation<EmptyRequest, RelativeSeconds>>) = DataInstructionCodes::RemoteTimestamp as u8,
-    StateFixSettings(Option<Conversation<EmptyRequest, StateFixSettings>>) = DataInstructionCodes::StateFixSettings as u8,
-    RelayState(Option<Conversation<RelayIndexRequest, RelayState>>) = DataInstructionCodes::RelayState as u8,
-    Version(Option<Conversation<EmptyRequest, u8>>) = DataInstructionCodes::Version as u8,
-    CurrentTime(Option<Conversation<EmptyRequest, RelativeSeconds>>) = DataInstructionCodes::CurrentTime as u8,
-    ContactWaitData(Option<Conversation<EmptyRequest, ContactsWaitData>>) = DataInstructionCodes::ContactWaitData as u8,
-    FixData(Option<Conversation<EmptyRequest, FixDataContainer>>) = DataInstructionCodes::FixData as u8,
-    SwitchData(Option<Conversation<EmptyRequest, StateSwitchDatas>>) = DataInstructionCodes::SwitchData as u8,
-    CyclesStatistics(Option<Conversation<EmptyRequest, CyclesStatistics>>) = DataInstructionCodes::CyclesStatistics as u8,
+    Settings(Conversation<EmptyRequest, RelaysSettings>) = DataInstructionCodes::Settings as u8,
+    State(Conversation<EmptyRequest, State>) = DataInstructionCodes::State as u8,
+    Id(Conversation<EmptyRequest, u32>) = DataInstructionCodes::Id as u8,
+    InterruptPin(Conversation<EmptyRequest, u8>) = DataInstructionCodes::InterruptPin as u8,
+    RemoteTimestamp(Conversation<EmptyRequest, RelativeSeconds>) = DataInstructionCodes::RemoteTimestamp as u8,
+    StateFixSettings(Conversation<EmptyRequest, StateFixSettings>) = DataInstructionCodes::StateFixSettings as u8,
+    RelayState(Conversation<RelayIndexRequest, RelayState>) = DataInstructionCodes::RelayState as u8,
+    Version(Conversation<EmptyRequest, u8>) = DataInstructionCodes::Version as u8,
+    CurrentTime(Conversation<EmptyRequest, RelativeSeconds>) = DataInstructionCodes::CurrentTime as u8,
+    ContactWaitData(Conversation<EmptyRequest, ContactsWaitData>) = DataInstructionCodes::ContactWaitData as u8,
+    FixData(Conversation<EmptyRequest, FixDataContainer>) = DataInstructionCodes::FixData as u8,
+    SwitchData(Conversation<EmptyRequest, StateSwitchDatas>) = DataInstructionCodes::SwitchData as u8,
+    CyclesStatistics(Conversation<EmptyRequest, CyclesStatistics>) = DataInstructionCodes::CyclesStatistics as u8,
     //v2 instructions
-    SwitchCountingSettings(Option<Conversation<EmptyRequest, SwitchCountingSettings>>) = DataInstructionCodes::SwitchCountingSettings as u8,
-    RelayDisabledTemp(Option<Conversation<EmptyRequest, RelaySingleState>>) = DataInstructionCodes::RelayDisabledTemp as u8,
-    RelaySwitchedOn(Option<Conversation<EmptyRequest, RelaySingleState>>) = DataInstructionCodes::RelaySwitchedOn as u8,
-    RelayMonitorOn(Option<Conversation<EmptyRequest, RelaySingleState>>) = DataInstructionCodes::RelayMonitorOn as u8,
-    RelayControlOn(Option<Conversation<EmptyRequest, RelaySingleState>>) = DataInstructionCodes::RelayControlOn as u8,
-    All(Option<Conversation<EmptyRequest, AllData>>) = DataInstructionCodes::All as u8,
+    SwitchCountingSettings(Conversation<EmptyRequest, SwitchCountingSettings>) = DataInstructionCodes::SwitchCountingSettings as u8,
+    RelayDisabledTemp(Conversation<EmptyRequest, RelaySingleState>) = DataInstructionCodes::RelayDisabledTemp as u8,
+    RelaySwitchedOn(Conversation<EmptyRequest, RelaySingleState>) = DataInstructionCodes::RelaySwitchedOn as u8,
+    RelayMonitorOn(Conversation<EmptyRequest, RelaySingleState>) = DataInstructionCodes::RelayMonitorOn as u8,
+    RelayControlOn(Conversation<EmptyRequest, RelaySingleState>) = DataInstructionCodes::RelayControlOn as u8,
+    All(Conversation<EmptyRequest, AllData>) = DataInstructionCodes::All as u8,
 }
 
 
@@ -97,68 +146,131 @@ impl DataInstructions {
         unsafe { *(self as *const Self as *const u8) }
     }
 
+    pub fn code(&self) -> DataInstructionCodes {
+        match self {
+            DataInstructions::RemoteTimestamp(_) => {
+                DataInstructionCodes::RemoteTimestamp
+            }
+            DataInstructions::CurrentTime(_) => {
+                DataInstructionCodes::CurrentTime
+            }
+            DataInstructions::Id(_) => {
+                DataInstructionCodes::Id
+            }
+            DataInstructions::Version(_) => {
+                DataInstructionCodes::Version
+            }
+            DataInstructions::StateFixSettings(_) => {
+                DataInstructionCodes::StateFixSettings
+            }
+            DataInstructions::RelayState(_) => {
+                DataInstructionCodes::RelayState
+            }
+            DataInstructions::State(_) => {
+                DataInstructionCodes::State
+            }
+            DataInstructions::CyclesStatistics(_) => {
+                DataInstructionCodes::CyclesStatistics
+            }
+            DataInstructions::FixData(_) => {
+                DataInstructionCodes::FixData
+            }
+            DataInstructions::Settings(_) => {
+                DataInstructionCodes::Settings
+            }
+            //v2 instructions
+            DataInstructions::ContactWaitData(_) => {
+                DataInstructionCodes::ContactWaitData
+            }
+            DataInstructions::SwitchData(_) => {
+                DataInstructionCodes::SwitchData
+            }
+            DataInstructions::InterruptPin(_) => {
+                DataInstructionCodes::InterruptPin
+            }
+            DataInstructions::SwitchCountingSettings(_) => {
+                DataInstructionCodes::SwitchCountingSettings
+            }
+            DataInstructions::RelayDisabledTemp(_) => {
+                DataInstructionCodes::RelayDisabledTemp
+            }
+            DataInstructions::RelaySwitchedOn(_) => {
+                DataInstructionCodes::RelaySwitchedOn
+            }
+            DataInstructions::RelayMonitorOn(_) => {
+                DataInstructionCodes::RelayMonitorOn
+            }
+            DataInstructions::RelayControlOn(_) => {
+                DataInstructionCodes::RelayControlOn
+            }
+            DataInstructions::All(_) => {
+                DataInstructionCodes::All
+            }
+        }
+    }
+
     pub fn parse_data(&self, data: &[u8]) -> Result<Conversation<EmptyRequest, State>, Errors> {
         self::Data::parse(data).map(|data| Conversation::Data(data))
     }
 
     pub fn parse_from(&mut self, data: &[u8]) -> Result<(), Errors> {
         match self {
-            DataInstructions::RemoteTimestamp(Some(Conversation::Data(ref_data))) => {
+            DataInstructions::RemoteTimestamp(Conversation::Data(ref_data)) => {
                 ref_data.parse_from(data)
             }
-            DataInstructions::CurrentTime(Some(Conversation::Data(ref_data))) => {
+            DataInstructions::CurrentTime(Conversation::Data(ref_data)) => {
                 ref_data.parse_from(data)
             }
-            DataInstructions::Id(Some(Conversation::Data(ref_data))) => {
+            DataInstructions::Id(Conversation::Data(ref_data)) => {
                 ref_data.parse_from(data)
             }
-            DataInstructions::Version(Some(Conversation::Data(ref_data))) => {
+            DataInstructions::Version(Conversation::Data(ref_data)) => {
                 ref_data.parse_from(data)
             }
-            DataInstructions::StateFixSettings(Some(Conversation::Data(ref_data))) => {
+            DataInstructions::StateFixSettings(Conversation::Data(ref_data)) => {
                 ref_data.parse_from(data)
             }
-            DataInstructions::RelayState(Some(Conversation::Data(ref_data))) => {
+            DataInstructions::RelayState(Conversation::Data(ref_data)) => {
                 ref_data.parse_from(data)
             }
-            DataInstructions::State(Some(Conversation::Data(ref_data))) => {
+            DataInstructions::State(Conversation::Data(ref_data)) => {
                 ref_data.parse_from(data)
             }
-            DataInstructions::CyclesStatistics(Some(Conversation::Data(ref_data))) => {
+            DataInstructions::CyclesStatistics(Conversation::Data(ref_data)) => {
                 ref_data.parse_from(data)
             }
-            DataInstructions::FixData(Some(Conversation::Data(ref_data))) => {
+            DataInstructions::FixData(Conversation::Data(ref_data)) => {
                 ref_data.parse_from(data)
             }
-            DataInstructions::Settings(Some(Conversation::Data(ref_data))) => {
+            DataInstructions::Settings(Conversation::Data(ref_data)) => {
                 ref_data.parse_from(data)
             }
             //v2 instructions
-            DataInstructions::ContactWaitData(Some(Conversation::Data(ref_data))) => {
+            DataInstructions::ContactWaitData(Conversation::Data(ref_data)) => {
                 ref_data.parse_from(data)
             }
-            DataInstructions::SwitchData(Some(Conversation::Data(ref_data))) => {
+            DataInstructions::SwitchData(Conversation::Data(ref_data)) => {
                 ref_data.parse_from(data)
             }
-            DataInstructions::InterruptPin(Some(Conversation::Data(ref_data))) => {
+            DataInstructions::InterruptPin(Conversation::Data(ref_data)) => {
                 ref_data.parse_from(data)
             }
-            DataInstructions::SwitchCountingSettings(Some(Conversation::Data(ref_data))) => {
+            DataInstructions::SwitchCountingSettings(Conversation::Data(ref_data)) => {
                 ref_data.parse_from(data)
             }
-            DataInstructions::RelayDisabledTemp(Some(Conversation::Data(ref_data))) => {
+            DataInstructions::RelayDisabledTemp(Conversation::Data(ref_data)) => {
                 ref_data.parse_from(data)
             }
-            DataInstructions::RelaySwitchedOn(Some(Conversation::Data(ref_data))) => {
+            DataInstructions::RelaySwitchedOn(Conversation::Data(ref_data)) => {
                 ref_data.parse_from(data)
             }
-            DataInstructions::RelayMonitorOn(Some(Conversation::Data(ref_data))) => {
+            DataInstructions::RelayMonitorOn(Conversation::Data(ref_data)) => {
                 ref_data.parse_from(data)
             }
-            DataInstructions::RelayControlOn(Some(Conversation::Data(ref_data))) => {
+            DataInstructions::RelayControlOn(Conversation::Data(ref_data)) => {
                 ref_data.parse_from(data)
             }
-            DataInstructions::All(Some(Conversation::Data(ref_data))) => {
+            DataInstructions::All(Conversation::Data(ref_data)) => {
                 ref_data.parse_from(data)
             }
             _ => {
@@ -167,110 +279,128 @@ impl DataInstructions {
         }
     }
 
-    pub fn parse(instruction_code: u8, data: &[u8]) -> Result<Self, Errors> {
-        if instruction_code == DataInstructionCodes::RemoteTimestamp as u8 {
-            Ok(DataInstructions::RemoteTimestamp(Some(Conversation::Data(RelativeSeconds::parse(data)?))))
-        } else if instruction_code == DataInstructionCodes::CurrentTime as u8 {
-            Ok(DataInstructions::CurrentTime(Some(Conversation::Data(RelativeSeconds::parse(data)?))))
-        } else if instruction_code == DataInstructionCodes::Id as u8 {
-            Ok(DataInstructions::Id(Some(Conversation::Data(u32::parse(data)?))))
-        } else if instruction_code == DataInstructionCodes::Version as u8 {
-            Ok(DataInstructions::Version(Some(Conversation::Data(u8::parse(data)?))))
-        } else if instruction_code == DataInstructionCodes::StateFixSettings as u8 {
-            Ok(DataInstructions::StateFixSettings(Some(Conversation::Data(StateFixSettings::parse(data)?))))
-        } else if instruction_code == DataInstructionCodes::RelayState as u8 {
-            Ok(DataInstructions::RelayState(Some(Conversation::Data(RelayState::parse(data)?))))
-        } else if instruction_code == DataInstructionCodes::State as u8 {
-            Ok(DataInstructions::State(Some(Conversation::Data(State::parse(data)?))))
-        } else if instruction_code == DataInstructionCodes::CyclesStatistics as u8 {
-            Ok(DataInstructions::CyclesStatistics(Some(Conversation::Data(CyclesStatistics::parse(data)?))))
-        } else if instruction_code == DataInstructionCodes::FixData as u8 {
-            Ok(DataInstructions::FixData(Some(Conversation::Data(FixDataContainer::parse(data)?))))
-        } else if instruction_code == DataInstructionCodes::Settings as u8 {
-            Ok(DataInstructions::Settings(Some(Conversation::Data(RelaysSettings::parse(data)?))))
+    pub fn parse(instruction: DataInstructionCodes, data: &[u8]) -> Result<Self, Errors> {
+        match instruction {
+            DataInstructionCodes::Settings => {
+                Ok(DataInstructions::Settings(Conversation::Data(RelaysSettings::parse(data)?)))
+            }
+            DataInstructionCodes::State => {
+                Ok(DataInstructions::State(Conversation::Data(State::parse(data)?)))
+            }
+            DataInstructionCodes::Id => {
+                Ok(DataInstructions::Id(Conversation::Data(u32::parse(data)?)))
+            }
+            DataInstructionCodes::InterruptPin => {
+                Ok(DataInstructions::InterruptPin(Conversation::Data(u8::parse(data)?)))
+            }
+            DataInstructionCodes::RemoteTimestamp => {
+                Ok(DataInstructions::RemoteTimestamp(Conversation::Data(RelativeSeconds::parse(data)?)))
+            }
+            DataInstructionCodes::StateFixSettings => {
+                Ok(DataInstructions::StateFixSettings(Conversation::Data(StateFixSettings::parse(data)?)))
+            }
+            DataInstructionCodes::RelayState => {
+                Ok(DataInstructions::RelayState(Conversation::Data(RelayState::parse(data)?)))
+            }
+            DataInstructionCodes::Version => {
+                Ok(DataInstructions::Version(Conversation::Data(u8::parse(data)?)))
+            }
+            DataInstructionCodes::CurrentTime => {
+                Ok(DataInstructions::CurrentTime(Conversation::Data(RelativeSeconds::parse(data)?)))
+            }
+            DataInstructionCodes::ContactWaitData => {
+                Ok(DataInstructions::ContactWaitData(Conversation::Data(ContactsWaitData::parse(data)?)))
+            }
+            DataInstructionCodes::FixData => {
+                Ok(DataInstructions::FixData(Conversation::Data(FixDataContainer::parse(data)?)))
+            }
+            DataInstructionCodes::SwitchData => {
+                Ok(DataInstructions::SwitchData(Conversation::Data(StateSwitchDatas::parse(data)?)))
+            }
+            DataInstructionCodes::CyclesStatistics => {
+                Ok(DataInstructions::CyclesStatistics(Conversation::Data(CyclesStatistics::parse(data)?)))
+            }
             //v2 instructions
-        } else if instruction_code == DataInstructionCodes::ContactWaitData as u8 {
-            Ok(DataInstructions::ContactWaitData(Some(Conversation::Data(ContactsWaitData::parse(data)?))))
-        } else if instruction_code == DataInstructionCodes::SwitchData as u8 {
-            Ok(DataInstructions::SwitchData(Some(Conversation::Data(StateSwitchDatas::parse(data)?))))
-        } else if instruction_code == DataInstructionCodes::InterruptPin as u8 {
-            Ok(DataInstructions::InterruptPin(Some(Conversation::Data(u8::parse(data)?))))
-        } else if instruction_code == DataInstructionCodes::SwitchCountingSettings as u8 {
-            Ok(DataInstructions::SwitchCountingSettings(Some(Conversation::Data(SwitchCountingSettings::parse(data)?))))
-        } else if instruction_code == DataInstructionCodes::RelayDisabledTemp as u8 {
-            Ok(DataInstructions::RelayDisabledTemp(Some(Conversation::Data(RelaySingleState::parse(data)?))))
-        } else if instruction_code == DataInstructionCodes::RelaySwitchedOn as u8 {
-            Ok(DataInstructions::RelaySwitchedOn(Some(Conversation::Data(RelaySingleState::parse(data)?))))
-        } else if instruction_code == DataInstructionCodes::RelayMonitorOn as u8 {
-            Ok(DataInstructions::RelayMonitorOn(Some(Conversation::Data(RelaySingleState::parse(data)?))))
-        } else if instruction_code == DataInstructionCodes::RelayControlOn as u8 {
-            Ok(DataInstructions::RelayControlOn(Some(Conversation::Data(RelaySingleState::parse(data)?))))
-        } else if instruction_code == DataInstructionCodes::All as u8 {
-            Ok(DataInstructions::All(Some(Conversation::Data(AllData::parse(data)?))))
-        } else {
-            Err(Errors::InstructionNotRecognized(instruction_code))
+            DataInstructionCodes::SwitchCountingSettings => {
+                Ok(DataInstructions::SwitchCountingSettings(Conversation::Data(SwitchCountingSettings::parse(data)?)))
+            }
+            DataInstructionCodes::RelayDisabledTemp => {
+                Ok(DataInstructions::RelayDisabledTemp(Conversation::Data(RelaySingleState::parse(data)?)))
+            }
+            DataInstructionCodes::RelaySwitchedOn => {
+                Ok(DataInstructions::RelaySwitchedOn(Conversation::Data(RelaySingleState::parse(data)?)))
+            }
+            DataInstructionCodes::RelayMonitorOn => {
+                Ok(DataInstructions::RelayMonitorOn(Conversation::Data(RelaySingleState::parse(data)?)))
+            }
+            DataInstructionCodes::RelayControlOn => {
+                Ok(DataInstructions::RelayControlOn(Conversation::Data(RelaySingleState::parse(data)?)))
+            }
+            DataInstructionCodes::All => {
+                Ok(DataInstructions::All(Conversation::Data(AllData::parse(data)?)))
+            }
+            _ => { Err(Errors::InstructionNotRecognized(instruction as u8)) }
         }
-
     }
 
     pub fn serialize(&self, buffer: &mut TxBuffer) -> Result<(), Errors> {
         match self {
-            DataInstructions::RemoteTimestamp(Some(Conversation::Data(value))) => {
+            DataInstructions::RemoteTimestamp(Conversation::Data(value)) => {
                 value.serialize(buffer)
             }
-            DataInstructions::CurrentTime(Some(Conversation::Data(value))) => {
+            DataInstructions::CurrentTime(Conversation::Data(value)) => {
                 value.serialize(buffer)
             }
-            DataInstructions::Id(Some(Conversation::Data(value))) => {
+            DataInstructions::Id(Conversation::Data(value)) => {
                 value.serialize(buffer)
             }
-            DataInstructions::Version(Some(Conversation::Data(value))) => {
+            DataInstructions::Version(Conversation::Data(value)) => {
                 value.serialize(buffer)
             }
-            DataInstructions::StateFixSettings(Some(Conversation::Data(value))) => {
+            DataInstructions::StateFixSettings(Conversation::Data(value)) => {
                 value.serialize(buffer)
             }
-            DataInstructions::RelayState(Some(Conversation::Data(value))) => {
+            DataInstructions::RelayState(Conversation::Data(value)) => {
                 value.serialize(buffer)
             }
-            DataInstructions::State(Some(Conversation::Data(value))) => {
+            DataInstructions::State(Conversation::Data(value)) => {
                 value.serialize(buffer)
             }
-            DataInstructions::CyclesStatistics(Some(Conversation::Data(value))) => {
+            DataInstructions::CyclesStatistics(Conversation::Data(value)) => {
                 value.serialize(buffer)
             }
-            DataInstructions::FixData(Some(Conversation::Data(value))) => {
+            DataInstructions::FixData(Conversation::Data(value)) => {
                 value.serialize(buffer)
             }
-            DataInstructions::Settings(Some(Conversation::Data(value))) => {
+            DataInstructions::Settings(Conversation::Data(value)) => {
                 value.serialize(buffer)
             }
             //v2 instructions
-            DataInstructions::ContactWaitData(Some(Conversation::Data(value))) => {
+            DataInstructions::ContactWaitData(Conversation::Data(value)) => {
                 value.serialize(buffer)
             }
-            DataInstructions::SwitchData(Some(Conversation::Data(value))) => {
+            DataInstructions::SwitchData(Conversation::Data(value)) => {
                 value.serialize(buffer)
             }
-            DataInstructions::InterruptPin(Some(Conversation::Data(value))) => {
+            DataInstructions::InterruptPin(Conversation::Data(value)) => {
                 value.serialize(buffer)
             }
-            DataInstructions::SwitchCountingSettings(Some(Conversation::Data(value))) => {
+            DataInstructions::SwitchCountingSettings(Conversation::Data(value)) => {
                 value.serialize(buffer)
             }
-            DataInstructions::RelayDisabledTemp(Some(Conversation::Data(value))) => {
+            DataInstructions::RelayDisabledTemp(Conversation::Data(value)) => {
                 value.serialize(buffer)
             }
-            DataInstructions::RelaySwitchedOn(Some(Conversation::Data(value))) => {
+            DataInstructions::RelaySwitchedOn(Conversation::Data(value)) => {
                 value.serialize(buffer)
             }
-            DataInstructions::RelayMonitorOn(Some(Conversation::Data(value))) => {
+            DataInstructions::RelayMonitorOn(Conversation::Data(value)) => {
                 value.serialize(buffer)
             }
-            DataInstructions::RelayControlOn(Some(Conversation::Data(value))) => {
+            DataInstructions::RelayControlOn(Conversation::Data(value)) => {
                 value.serialize(buffer)
             }
-            DataInstructions::All(Some(Conversation::Data(value))) => {
+            DataInstructions::All(Conversation::Data(value)) => {
                 value.serialize(buffer)
             }
             _ => {

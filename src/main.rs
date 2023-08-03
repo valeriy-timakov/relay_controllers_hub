@@ -1,4 +1,4 @@
-#![deny(unsafe_code)]
+//#![deny(unsafe_code)]
 //#![deny(warnings)]
 #![no_main]
 #![no_std]
@@ -59,10 +59,15 @@ mod app {
     use stm32_test::app_logic::adc_transfer::{ ADCTransfer};
     use stm32_test::hal_ext::rtc_wrapper::{ RtcWrapper};
     use stm32_test::app_logic::led::Led;
-    use stm32_test::app_logic::slave_controller_link::SlaveControllerLink;
+    use stm32_test::app_logic::slave_controller_link::{init_slave_controllers, SlaveControllerLink};
     use stm32_test::hal_ext::serial_transfer::{RxTransfer, SerialTransfer, TxTransfer};
     use stm32_test::utils::write_to;
     use crate::{ SignalReceiverImp };
+    use embedded_alloc::Heap;
+
+
+    #[global_allocator]
+    static HEAP: Heap = Heap::empty();
 
     const MONO_HZ: u32 = 84_000_000;
     type Serial1Transfer = SerialTransfer<USART1, Stream7<DMA2>, 4, Stream2<DMA2>, 4>;
@@ -98,6 +103,16 @@ mod app {
 
     #[init]
     fn init(mut ctx: init::Context) -> (Shared, Local, init::Monotonics) {
+
+        {
+            use core::mem::MaybeUninit;
+            const HEAP_SIZE: usize = 1024;
+            static mut HEAP_MEM: [MaybeUninit<u8>; HEAP_SIZE] = [MaybeUninit::uninit(); HEAP_SIZE];
+            unsafe { HEAP.init(HEAP_MEM.as_ptr() as usize, HEAP_SIZE) }
+        }
+
+        init_slave_controllers();
+
         let mut dp: Peripherals = ctx.device;
 
         let rcc = dp.RCC.constrain();
