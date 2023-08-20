@@ -168,7 +168,7 @@ impl <U, TxStream, const TX_CHANNEL: u8> TransmitterToSlaveController<U, TxStrea
         result
     }
 
-    pub fn send_error(&mut self, instruction_code: u8, error_code: ErrorCode) -> Result<(), Errors> {
+    fn send_error(&mut self, instruction_code: u8, error_code: ErrorCode) -> Result<(), Errors> {
         self.tx.start_transfer(|buffer| {
             buffer.add_u8(Operation::None as u8)?;
             buffer.add_u8(Operation::Error as u8)?;
