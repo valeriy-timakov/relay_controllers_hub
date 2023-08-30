@@ -1,0 +1,13 @@
+[package]
+authors = ["Valerii Timakov <valtimakov@gmail.com>"]
+edition = "2018"
+name = "host-target-tests"
+publish = false
+version = "0.1.0"
+
+[dev-dependencies]
+anyhow = "1.0.38"
+logic = { path = "../logic" }
+parking_lot = "0.12.1"
+postcard = { version = "1.0.6", features = ["alloc"] }
+serialport = "4.2.2"

@@ -1,3 +1,5 @@
+#![allow(unsafe_code)]
+
 pub mod domain;
 
 use alloc::boxed::Box;
@@ -6,7 +8,7 @@ use cortex_m_semihosting::hprintln;
 use stm32f4xx_hal::dma::{ChannelX, MemoryToPeripheral, PeripheralToMemory};
 use stm32f4xx_hal::serial::{Rx, Tx, Instance, RxISR, TxISR, RxListen};
 use stm32f4xx_hal::dma::traits::{Channel, DMASet, PeriAddress, Stream};
-use crate::app_logic::slave_controller_link::domain::{*};
+use crate::services::slave_controller_link::domain::{*};
 use crate::errors::Errors;
 use crate::hal_ext::rtc_wrapper::{RelativeMillis, RelativeSeconds };
 use crate::hal_ext::serial_transfer::{RxTransfer, SerialTransfer, TxTransfer};

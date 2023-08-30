@@ -1,6 +1,10 @@
+#![deny(unsafe_code)]
+#![deny(warnings)]
 use crate::errors::Errors;
 
+pub mod dma_read_buffer;
 pub mod write_to;
+
 
 pub struct Empty;
 
@@ -49,7 +53,7 @@ impl BitsU8 {
 
     /**
     Value of bits from `from` to `to` (inclusive).
-    */
+     */
     pub fn bits(&self, from: u8, to: u8) -> Result<u8, Errors> {
         if from > to {
             return Err(Errors::FromAfterTo);

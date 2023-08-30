@@ -1,3 +1,5 @@
+#![deny(unsafe_code)]
+
 use stm32f4xx_hal::rtc::{Error, Rtc};
 use time::PrimitiveDateTime;
 use time_core::convert::{ Millisecond, Second, Nanosecond};

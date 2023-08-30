@@ -1,11 +1,11 @@
 #![deny(unsafe_code)]
-#![deny(warnings)]
 
 use stm32f4xx_hal::dma::{ChannelX, MemoryToPeripheral, PeripheralToMemory, Transfer};
 use stm32f4xx_hal::serial::{Rx, Tx, Serial, Instance, RxISR, TxISR, RxListen};
 use stm32f4xx_hal::dma::config::DmaConfig;
 use stm32f4xx_hal::dma::traits::{Channel, DMASet, PeriAddress, Stream};
 use crate::errors::Errors;
+use crate::utils::dma_read_buffer::Buffer;
 
 const BUFFER_SIZE: usize = 256;
 pub type TxBuffer = Buffer<BUFFER_SIZE>;
@@ -166,7 +166,6 @@ impl<U, STREAM, const CHANNEL: u8> RxTransfer<U, STREAM, CHANNEL>
     }
 }
 
-use crate::hal_ext::dma_read_buffer::Buffer;
 
 pub struct TxTransfer<U, STREAM, const CHANNEL: u8>
     where

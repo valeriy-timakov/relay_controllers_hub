@@ -1,4 +1,4 @@
-
+#![allow(unsafe_code)]
 
 use crate::errors::Errors;
 use crate::hal_ext::rtc_wrapper::{ RelativeSeconds };

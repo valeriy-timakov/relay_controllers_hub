@@ -1,5 +1,4 @@
 #![deny(unsafe_code)]
-#![deny(warnings)]
 
 use stm32f4xx_hal::dma::DMAError;
 
