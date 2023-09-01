@@ -1,6 +1,5 @@
 #![deny(unsafe_code)]
 
-use stm32f4xx_hal::rtc::{Error, Rtc};
 use time::PrimitiveDateTime;
 use time_core::convert::{ Millisecond, Second, Nanosecond};
 
@@ -40,13 +39,33 @@ impl RelativeSeconds {
     }
 }
 
-pub struct RtcWrapper {
-    rtc: Rtc,
+pub trait Rtc {
+    type Error;
+    fn get_datetime(&mut self) -> PrimitiveDateTime;
+    fn set_datetime(&mut self, date: &PrimitiveDateTime) -> Result<(), Self::Error>;
+}
+
+pub struct RtcWrapper<RTC: Rtc> {
+    rtc: RTC,
     base_date_time: Option<PrimitiveDateTime>,
 }
 
-impl RtcWrapper {
-    pub fn new(rtc: Rtc) -> Self {
+impl Rtc for stm32f4xx_hal::rtc::Rtc {
+    type Error = stm32f4xx_hal::rtc::Error;
+
+    #[inline(always)]
+    fn get_datetime(&mut self) -> PrimitiveDateTime {
+        self.get_datetime()
+    }
+
+    #[inline(always)]
+    fn set_datetime(&mut self, date: &PrimitiveDateTime) -> Result<(), Self::Error> {
+        self.set_datetime(date)
+    }
+}
+
+impl<RTC: Rtc> RtcWrapper<RTC> {
+    pub fn new(rtc: RTC) -> Self {
         Self { rtc, base_date_time: None }
     }
 
@@ -54,7 +73,7 @@ impl RtcWrapper {
         self.rtc.get_datetime()
     }
 
-    pub fn set_datetime(&mut self, date: PrimitiveDateTime) -> Result<Option<PrimitiveDateTime>, Error> {
+    pub fn set_datetime(&mut self, date: PrimitiveDateTime) -> Result<Option<PrimitiveDateTime>, RTC::Error> {
         self.rtc.set_datetime(&date).map(|()| {
             let old_base_date_time = self.base_date_time;
             self.base_date_time = Some(date);
@@ -110,4 +129,23 @@ impl RtcWrapper {
         })
     }
 
+}
+
+
+#[cfg(test)]
+mod tests {
+    use crate::hal_ext::rtc_wrapper::{RelativeMillis, RelativeSeconds};
+
+    #[test]
+    fn test_relative_millis() {
+        let millis = RelativeMillis::new(1000);
+        assert_eq!(millis.value(), 1000);
+        assert_eq!(millis.seconds().value(), 1);
+    }
+
+    #[test]
+    fn test_relative_seconds() {
+        let millis = RelativeSeconds::new(1000);
+        assert_eq!(millis.value(), 1000);
+    }
 }
