@@ -1,7 +1,6 @@
 [workspace]
 members = [
   "host-target-tests",
-  "drivers",
   "logic",
   "xtask",
 ]

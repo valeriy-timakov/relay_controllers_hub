@@ -36,7 +36,7 @@ type Tx1Transfer = TxTransfer<USART1, Stream7<DMA2>, 4>;
 type Serial2Transfer = SerialTransfer<USART2, Stream6<DMA1>, 4, Stream5<DMA1>, 4>;
 type Rx2Transfer = RxTransfer<USART2, Stream5<DMA1>, 4>;
 type Tx2Transfer = TxTransfer<USART2, Stream6<DMA1>, 4>;
-type ControllerLinkSlave6 = SlaveControllerLink<USART6, Stream6<DMA2>, 5, Stream1<DMA2>, 5, SignalReceiverImp>;
+pub type ControllerLinkSlave6 = SlaveControllerLink<USART6, Stream6<DMA2>, 5, Stream1<DMA2>, 5, SignalReceiverImp>;
 
 
 
@@ -70,15 +70,8 @@ impl SignalsReceiver for SignalReceiverImp {
 
 
 pub struct Board {
-    serial_transfer_1: Serial1Transfer,
-    serial_transfer_2: Serial2Transfer,
-    controller_link_slave6: ControllerLinkSlave6,
-    led: Led<'C', 13>,
-    adc_transfer: ADCTransfer,
-    rtc: RtcWrapper,
-    button: gpio::PA0<Input>,
-    counter: timer::CounterMs<TIM3>,
-    counter2: timer::CounterMs<TIM2>,
+    pub controller_link_slave6: ControllerLinkSlave6,
+    pub in_work: InWork
 }
 
 impl Board {
@@ -166,19 +159,39 @@ impl Board {
         let adc_transfer =
             ADCTransfer::new(dma2.0, dp.ADC1, gpiob.pb1.into_analog());
 
-
-        Self {
+        let in_work = InWork {
             serial_transfer_1,
             serial_transfer_2,
-            controller_link_slave6,
             led,
             adc_transfer,
             rtc,
             button,
             counter,
-            counter2,
+            counter2
+        };
+
+        Self {
+            controller_link_slave6,
+            in_work
         }
     }
+
+
+
+}
+
+pub struct InWork {
+    serial_transfer_1: Serial1Transfer,
+    serial_transfer_2: Serial2Transfer,
+    led: Led<'C', 13>,
+    adc_transfer: ADCTransfer,
+    pub rtc: RtcWrapper,
+    button: gpio::PA0<Input>,
+    counter: timer::CounterMs<TIM3>,
+    counter2: timer::CounterMs<TIM2>,
+}
+
+impl InWork {
 
     pub fn on_button_pressed(&mut self) {
         self.button.clear_interrupt_pending_bit();
@@ -253,13 +266,6 @@ impl Board {
     }
 
 
-    pub fn on_usart6(&mut self) {
-        let Board { ref mut controller_link_slave6, ref mut rtc, .. } = self;
-        match controller_link_slave6.on_get_command(|| { rtc.get_relative_timestamp() }) {
-            Ok(_) => { hprintln!("rx interrupt handled!"); }
-            Err(_) => { hprintln!("Wrong UART1 on idle interrupt: no buffer!"); }
-        };
-    }
 
 
     pub fn on_dma2_stream2(&mut self) {
@@ -269,16 +275,6 @@ impl Board {
 
     pub fn on_dma2_stream7(&mut self) {
         self.serial_transfer_1.tx().on_dma_interrupts();
-    }
-
-
-    pub fn on_dma2_stream1(&mut self) {
-        self.controller_link_slave6.on_rx_dma_interrupts();
-    }
-
-
-    pub fn on_dma2_stream6(&mut self) {
-        self.controller_link_slave6.on_tx_dma_interrupts();
     }
 
 
@@ -308,6 +304,4 @@ impl Board {
             None => {}
         }
     }
-
-
 }
