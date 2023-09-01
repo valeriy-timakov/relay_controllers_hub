@@ -19,6 +19,7 @@ use stm32f4xx_hal::{
     rtc::{ Rtc },
 };
 use stm32f4xx_hal::dma::{Stream1, Stream5, Stream6, Stream7};
+use stm32f4xx_hal::gpio::{Output, Pin, PushPull};
 use stm32f4xx_hal::pac::{DMA1, USART2, USART6};
 use time::{Date, PrimitiveDateTime, Time};
 use time::Month;
@@ -183,9 +184,9 @@ impl Board {
 pub struct InWork {
     serial_transfer_1: Serial1Transfer,
     serial_transfer_2: Serial2Transfer,
-    led: Led<'C', 13>,
+    led: Led<Pin<'C', 13, Output<PushPull>>>,
     adc_transfer: ADCTransfer,
-    pub rtc: RtcWrapper,
+    pub rtc: RtcWrapper<Rtc>,
     button: gpio::PA0<Input>,
     counter: timer::CounterMs<TIM3>,
     counter2: timer::CounterMs<TIM2>,

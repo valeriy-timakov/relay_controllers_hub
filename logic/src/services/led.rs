@@ -1,12 +1,10 @@
 #![deny(unsafe_code)]
 #![deny(warnings)]
 
-use stm32f4xx_hal::{
-    gpio::{ Output, PushPull, Pin },
-};
+use embedded_hal::digital::v2::OutputPin;
 
-pub struct Led<const P: char, const N: u8> {
-    pin: Pin<P, N, Output<PushPull>>,
+pub struct Led<Pin: OutputPin> {
+    pin: Pin,
     on_cycles_count: u16,
     off_cycles_count: u16,
     on_when_low: bool,
@@ -14,8 +12,8 @@ pub struct Led<const P: char, const N: u8> {
     is_on: bool,
 }
 
-impl<const P: char, const N: u8> Led<P, N> {
-    pub fn new(on_cycles_count: u16, off_cycles_count: u16, on_when_low: bool, pin: Pin<P, N, Output<PushPull>>) -> Self {
+impl<Pin: OutputPin> Led<Pin> {
+    pub fn new(on_cycles_count: u16, off_cycles_count: u16, on_when_low: bool, pin: Pin) -> Self {
         Self {
             pin,
             on_cycles_count,
@@ -26,22 +24,24 @@ impl<const P: char, const N: u8> Led<P, N> {
         }
     }
 
-    pub fn init(&mut self, on: bool) {
+    pub fn init(&mut self, on: bool) -> Result<(), <Pin as embedded_hal::digital::v2::OutputPin>::Error> {
         self.is_on = on;
         self.cycles_count = 0;
         if self.is_on ^ self.on_when_low {
-            self.pin.set_high();
+            self.pin.set_high()
         } else {
-            self.pin.set_low();
+            self.pin.set_low()
         }
     }
 
-    pub fn update(&mut self) {
+    pub fn update(&mut self) -> Result<(), <Pin as embedded_hal::digital::v2::OutputPin>::Error> {
         self.cycles_count += 1;
         if self.is_on && self.cycles_count >= self.on_cycles_count {
-            self.init(false);
+            self.init(false)
         } else if !self.is_on && self.cycles_count >= self.off_cycles_count {
-            self.init(true);
+            self.init(true)
+        } else {
+            Ok(())
         }
     }
 
