@@ -10,7 +10,7 @@ pub mod services;
 
 #[cfg(test)]
 mod test_mocks;
-/*
+
 use serde_derive::{Deserialize, Serialize};
 
 /// A message sent from the host to the target
@@ -62,6 +62,7 @@ mod tests {
         Ok(())
     }
 
+    //TODO DON'N KNOW WHY, BUT IF DELETE THIS TEST, THE TESTS TESTS LINKING WILL FAIL
     #[quickcheck]
     fn target2host_measurement_message_size(
         id: u32,
@@ -74,4 +75,3 @@ mod tests {
         Ok(())
     }
 }
-*/
