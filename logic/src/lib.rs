@@ -7,6 +7,7 @@ pub mod errors;
 pub mod utils;
 pub mod hal_ext;
 pub mod services;
+pub mod implementations;
 
 #[cfg(test)]
 mod test_mocks;

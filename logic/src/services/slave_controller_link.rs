@@ -5,13 +5,11 @@ pub mod domain;
 use alloc::boxed::Box;
 use core::mem::size_of;
 use cortex_m_semihosting::hprintln;
-use stm32f4xx_hal::dma::{ChannelX, MemoryToPeripheral, PeripheralToMemory};
-use stm32f4xx_hal::serial::{Rx, Tx, Instance, RxISR, TxISR, RxListen};
-use stm32f4xx_hal::dma::traits::{Channel, DMASet, PeriAddress, Stream};
+use embedded_dma::{ReadBuffer, WriteBuffer};
 use crate::services::slave_controller_link::domain::{*};
 use crate::errors::Errors;
 use crate::hal_ext::rtc_wrapper::{RelativeMillis, RelativeSeconds };
-use crate::hal_ext::serial_transfer::{RxTransfer, SerialTransfer, TxTransfer};
+use crate::hal_ext::serial_transfer::{Decomposable, RxTransfer, RxTransferProxy, SerialTransfer, TxTransfer, TxTransferProxy};
 
 
 
@@ -51,33 +49,33 @@ pub trait SignalsReceiver {
     fn on_request_response(&mut self, request: &SentRequest, response: DataInstructions);
 }
 
-pub struct SlaveControllerLink<U, TxStream, const TX_CHANNEL: u8, RxStream, const RX_CHANNEL: u8, SR>
+pub struct SlaveControllerLink<T, R, TxBuff, RxBuff, DmaErrorT, DmaErrorR, SR>
     where
-        U: Instance,
-        Tx<U>: PeriAddress<MemSize=u8> + DMASet<TxStream, TX_CHANNEL, MemoryToPeripheral> + TxISR,
-        Rx<U, u8>: PeriAddress<MemSize=u8> + DMASet<RxStream, RX_CHANNEL, PeripheralToMemory> + RxISR + RxListen,
-        TxStream: Stream,
-        ChannelX<TX_CHANNEL>: Channel,
-        RxStream: Stream,
-        ChannelX<RX_CHANNEL>: Channel,
+        TxBuff: ReadBuffer,
+        RxBuff: WriteBuffer,
+        DmaErrorR: Decomposable<RxBuff>,
+        DmaErrorT: Decomposable<TxBuff>,
+        T: TxTransferProxy<TxBuff, DmaErrorT>,
+        R: RxTransferProxy<RxBuff, DmaErrorR>,
         SR: SignalsReceiver,
 {
-    tx: TransmitterToSlaveController<U, TxStream, TX_CHANNEL>,
-    rx: ReceiverFromSlaveController<U, RxStream, RX_CHANNEL, SR>,
+    tx: TransmitterToSlaveController<T, TxBuff, DmaErrorT>,
+    rx: ReceiverFromSlaveController<R, RxBuff, DmaErrorR, SR>,
 }
 
-impl <U, TxStream, const TX_CHANNEL: u8, RxStream, const RX_CHANNEL: u8, SR> SlaveControllerLink<U, TxStream, TX_CHANNEL, RxStream, RX_CHANNEL, SR>
+
+impl <T, R, TxBuff, RxBuff, DmaErrorT, DmaErrorR, SR>
+SlaveControllerLink<T, R,TxBuff, RxBuff, DmaErrorT, DmaErrorR,  SR>
     where
-        U: Instance,
-        Tx<U>: PeriAddress<MemSize=u8> + DMASet<TxStream, TX_CHANNEL, MemoryToPeripheral> + TxISR,
-        Rx<U, u8>: PeriAddress<MemSize=u8> + DMASet<RxStream, RX_CHANNEL, PeripheralToMemory> + RxISR + RxListen,
-        TxStream: Stream,
-        ChannelX<TX_CHANNEL>: Channel,
-        RxStream: Stream,
-        ChannelX<RX_CHANNEL>: Channel,
+        TxBuff: ReadBuffer,
+        RxBuff: WriteBuffer,
+        DmaErrorR: Decomposable<RxBuff>,
+        DmaErrorT: Decomposable<TxBuff>,
+        T: TxTransferProxy<TxBuff, DmaErrorT>,
+        R: RxTransferProxy<RxBuff, DmaErrorR>,
         SR: SignalsReceiver,
 {
-    pub fn create (serial_transfer: SerialTransfer<U, TxStream, TX_CHANNEL, RxStream, RX_CHANNEL>, signal_receiver: SR) -> Result<Self, Errors> {
+    pub fn create (serial_transfer: SerialTransfer<T, R, TxBuff, RxBuff, DmaErrorT, DmaErrorR>, signal_receiver: SR) -> Result<Self, Errors> {
         let (tx, rx) = serial_transfer.into();
         Ok(Self {
             tx: TransmitterToSlaveController::new(tx),
@@ -116,27 +114,25 @@ impl SentRequest {
 
 const MAX_REQUESTS_COUNT: usize = 4;
 
-struct TransmitterToSlaveController<U, TxStream, const TX_CHANNEL: u8>
+struct TransmitterToSlaveController<T, TxBuff, DmaError>
     where
-        U: Instance,
-        Tx<U>: PeriAddress<MemSize=u8> + DMASet<TxStream, TX_CHANNEL, MemoryToPeripheral> + TxISR,
-        TxStream: Stream,
-        ChannelX<TX_CHANNEL>: Channel,
+        TxBuff: ReadBuffer,
+        DmaError: Decomposable<TxBuff>,
+        T: TxTransferProxy<TxBuff, DmaError>,
 {
-    tx: TxTransfer<U, TxStream, TX_CHANNEL>,
+    tx: TxTransfer<T, TxBuff, DmaError>,
     sent_requests: [Option<SentRequest>; MAX_REQUESTS_COUNT],
     requests_count: usize,
     request_needs_cache_send: bool,
 }
 
-impl <U, TxStream, const TX_CHANNEL: u8> TransmitterToSlaveController<U, TxStream, TX_CHANNEL>
+impl <T, TxBuff, DmaError> TransmitterToSlaveController<T, TxBuff, DmaError>
     where
-        U: Instance,
-        Tx<U>: PeriAddress<MemSize=u8> + DMASet<TxStream, TX_CHANNEL, MemoryToPeripheral> + TxISR,
-        TxStream: Stream,
-        ChannelX<TX_CHANNEL>: Channel,
+        TxBuff: ReadBuffer,
+        DmaError: Decomposable<TxBuff>,
+        T: TxTransferProxy<TxBuff, DmaError>,
 {
-    pub fn new (tx: TxTransfer<U, TxStream, TX_CHANNEL>) -> Self {
+    pub fn new (tx: TxTransfer<T, TxBuff, DmaError>) -> Self {
         Self {
             tx,
             sent_requests: [None, None, None, None],
@@ -172,6 +168,7 @@ impl <U, TxStream, const TX_CHANNEL: u8> TransmitterToSlaveController<U, TxStrea
 
     fn send_error(&mut self, instruction_code: u8, error_code: ErrorCode) -> Result<(), Errors> {
         self.tx.start_transfer(|buffer| {
+            buffer.clear();
             buffer.add_u8(Operation::None as u8)?;
             buffer.add_u8(Operation::Error as u8)?;
             buffer.add_u8(instruction_code)?;
@@ -186,28 +183,26 @@ impl <U, TxStream, const TX_CHANNEL: u8> TransmitterToSlaveController<U, TxStrea
 
 }
 
-struct ReceiverFromSlaveController<U, RxStream, const RX_CHANNEL: u8, SR>
+struct ReceiverFromSlaveController<R, RxBuff, DmaError, SR>
     where
-        U: Instance,
-        Rx<U, u8>: PeriAddress<MemSize=u8> + DMASet<RxStream, RX_CHANNEL, PeripheralToMemory> + RxISR + RxListen,
-        RxStream: Stream,
-        ChannelX<RX_CHANNEL>: Channel,
+        RxBuff: WriteBuffer,
+        DmaError: Decomposable<RxBuff>,
+        R: RxTransferProxy<RxBuff, DmaError>,
         SR: SignalsReceiver,
 {
-    rx: RxTransfer<U, RxStream, RX_CHANNEL>,
+    rx: RxTransfer<R, RxBuff, DmaError>,
     signal_receiver: SR,
     static_buffers_idx: usize
 }
 
-impl <U, RxStream, const RX_CHANNEL: u8, SR> ReceiverFromSlaveController<U, RxStream, RX_CHANNEL, SR>
+impl <R, RxBuff, DmaError, SR> ReceiverFromSlaveController<R, RxBuff, DmaError, SR>
     where
-        U: Instance,
-        Rx<U, u8>: PeriAddress<MemSize=u8> + DMASet<RxStream, RX_CHANNEL, PeripheralToMemory> + RxISR + RxListen,
-        RxStream: Stream,
-        ChannelX<RX_CHANNEL>: Channel,
+        RxBuff: WriteBuffer,
+        DmaError: Decomposable<RxBuff>,
+        R: RxTransferProxy<RxBuff, DmaError>,
         SR: SignalsReceiver,
 {
-    pub fn create (rx: RxTransfer<U, RxStream, RX_CHANNEL>, signal_receiver: SR) -> Result<Self, Errors> {
+    pub fn create (rx: RxTransfer<R, RxBuff, DmaError>, signal_receiver: SR) -> Result<Self, Errors> {
         let static_buffers_idx = unsafe {
             if INSTANCES_COUNT >= MAX_INSTANCES_COUNT {
                 return Err(Errors::SlaveControllersInstancesMaxCountReached);
@@ -219,14 +214,14 @@ impl <U, RxStream, const RX_CHANNEL: u8, SR> ReceiverFromSlaveController<U, RxSt
         Ok(Self { rx, signal_receiver: signal_receiver, static_buffers_idx })
     }
 
-    pub fn on_get_command<TS, TxStream, const TX_CHANNEL: u8>(
+    pub fn on_get_command<T, TS, TxBuff>(
             &mut self,
-            tx:  &mut TransmitterToSlaveController<U, TxStream, TX_CHANNEL>,
+            tx:  &mut TransmitterToSlaveController<T, TxBuff, DmaError>,
             time_src: TS) -> Result<(), Errors>
         where
-            Tx<U>: PeriAddress<MemSize=u8> + DMASet<TxStream, TX_CHANNEL, MemoryToPeripheral> + TxISR,
-            TxStream: Stream,
-            ChannelX<TX_CHANNEL>: Channel,
+            TxBuff: ReadBuffer,
+            DmaError: Decomposable<TxBuff>,
+            T: TxTransferProxy<TxBuff, DmaError>,
             TS: FnOnce() -> RelativeMillis,
     {
         let ReceiverFromSlaveController { rx, signal_receiver, static_buffers_idx } = self;

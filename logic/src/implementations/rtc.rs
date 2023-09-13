@@ -1,4 +1,5 @@
-
+use time::PrimitiveDateTime;
+use crate::hal_ext::rtc_wrapper::Rtc;
 
 impl Rtc for stm32f4xx_hal::rtc::Rtc {
     type Error = stm32f4xx_hal::rtc::Error;

@@ -1,6 +1,6 @@
 #![allow(unsafe_code)]
 
-use embedded_dma::{ReadBuffer};
+use embedded_dma::{ReadBuffer, WriteBuffer};
 use crate::errors::Errors;
 
 pub struct Buffer<const BUFFER_SIZE: usize> {
@@ -8,76 +8,20 @@ pub struct Buffer<const BUFFER_SIZE: usize> {
     size: usize,
 }
 
+pub  trait BufferWriter {
+    fn add_str(&mut self, string: &str) -> Result<(), Errors>;
+    fn add(&mut self, data: &[u8]) -> Result<(), Errors>;
+    fn add_u8(&mut self, byte: u8) -> Result<(), Errors>;
+    fn add_u16(&mut self, value: u16) -> Result<(), Errors>;
+    fn add_u32(&mut self, value: u32) -> Result<(), Errors>;
+    fn add_u64(&mut self, value: u64) -> Result<(), Errors>;
+    fn clear(&mut self);
+}
+
 impl <const BUFFER_SIZE: usize> Buffer<BUFFER_SIZE> {
 
     pub fn new(buffer: &'static mut [u8; BUFFER_SIZE]) -> Self {
         Self { buffer, size: 0 }
-    }
-
-    #[inline(always)]
-    pub fn add_str(&mut self, string: &str) -> Result<(), Errors> {
-        self.add(string.as_bytes())
-    }
-
-    pub fn add(&mut self, data: &[u8]) -> Result<(), Errors> {
-        if data.len() > BUFFER_SIZE - self.size {
-            return Err(Errors::DmaBufferOverflow);
-        }
-        data.iter().for_each(|byte| {
-            self.buffer[self.size] = *byte;
-            self.size += 1;
-        });
-        Ok(())
-    }
-
-    #[inline]
-    pub fn add_u8(&mut self, byte: u8) -> Result<(), Errors> {
-        if 1 > BUFFER_SIZE - self.size {
-            return Err(Errors::DmaBufferOverflow);
-        }
-        self.buffer[self.size] = byte;
-        self.size += 1;
-        Ok(())
-    }
-
-    #[inline]
-    pub fn add_u16(&mut self, value: u16) -> Result<(), Errors> {
-        if 2 > BUFFER_SIZE - self.size {
-            return Err(Errors::DmaBufferOverflow);
-        }
-        self.buffer[self.size] = ((value >> 8) & 0xff) as u8;
-        self.size += 1;
-        self.buffer[self.size] = (value & 0xff) as u8;
-        self.size += 1;
-        Ok(())
-    }
-
-    #[inline]
-    pub fn add_u32(&mut self, value: u32) -> Result<(), Errors> {
-        if 4 > BUFFER_SIZE - self.size {
-            return Err(Errors::DmaBufferOverflow);
-        }
-        for i in 0..4 {
-            self.buffer[self.size] = ((value >> (24 - i * 8)) & 0xff) as u8;
-            self.size += 1;
-        }
-        Ok(())
-    }
-
-    #[inline]
-    pub fn add_u64(&mut self, value: u64) -> Result<(), Errors> {
-        if 8 > BUFFER_SIZE - self.size {
-            return Err(Errors::DmaBufferOverflow);
-        }
-        for i in 0..8 {
-            self.buffer[self.size] = ((value >> (56 - i * 8)) & 0xff) as u8;
-            self.size += 1;
-        }
-        Ok(())
-    }
-
-    pub fn clear(&mut self) {
-        self.size = 0;
     }
 
     pub fn bytes(&self) -> &[u8] {
@@ -90,11 +34,90 @@ impl <const BUFFER_SIZE: usize> Buffer<BUFFER_SIZE> {
     */
 }
 
+impl <const BUFFER_SIZE: usize> BufferWriter for Buffer<BUFFER_SIZE> {
+
+
+    #[inline(always)]
+    fn add_str(&mut self, string: &str) -> Result<(), Errors> {
+        self.add(string.as_bytes())
+    }
+
+    fn add(&mut self, data: &[u8]) -> Result<(), Errors> {
+        if data.len() > BUFFER_SIZE - self.size {
+            return Err(Errors::DmaBufferOverflow);
+        }
+        data.iter().for_each(|byte| {
+            self.buffer[self.size] = *byte;
+            self.size += 1;
+        });
+        Ok(())
+    }
+
+    #[inline]
+    fn add_u8(&mut self, byte: u8) -> Result<(), Errors> {
+        if 1 > BUFFER_SIZE - self.size {
+            return Err(Errors::DmaBufferOverflow);
+        }
+        self.buffer[self.size] = byte;
+        self.size += 1;
+        Ok(())
+    }
+
+    #[inline]
+    fn add_u16(&mut self, value: u16) -> Result<(), Errors> {
+        if 2 > BUFFER_SIZE - self.size {
+            return Err(Errors::DmaBufferOverflow);
+        }
+        self.buffer[self.size] = ((value >> 8) & 0xff) as u8;
+        self.size += 1;
+        self.buffer[self.size] = (value & 0xff) as u8;
+        self.size += 1;
+        Ok(())
+    }
+
+    #[inline]
+    fn add_u32(&mut self, value: u32) -> Result<(), Errors> {
+        if 4 > BUFFER_SIZE - self.size {
+            return Err(Errors::DmaBufferOverflow);
+        }
+        for i in 0..4 {
+            self.buffer[self.size] = ((value >> (24 - i * 8)) & 0xff) as u8;
+            self.size += 1;
+        }
+        Ok(())
+    }
+
+    #[inline]
+    fn add_u64(&mut self, value: u64) -> Result<(), Errors> {
+        if 8 > BUFFER_SIZE - self.size {
+            return Err(Errors::DmaBufferOverflow);
+        }
+        for i in 0..8 {
+            self.buffer[self.size] = ((value >> (56 - i * 8)) & 0xff) as u8;
+            self.size += 1;
+        }
+        Ok(())
+    }
+
+    fn clear(&mut self) {
+        self.size = 0;
+    }
+}
+
 unsafe impl <const BUFFER_SIZE: usize> ReadBuffer for Buffer<BUFFER_SIZE> {
     type Word = u8;
 
     unsafe fn read_buffer(&self) -> (*const Self::Word, usize) {
         let ptr = self.buffer.as_ptr();
+        (ptr, self.size)
+    }
+}
+
+unsafe impl <const BUFFER_SIZE: usize> WriteBuffer for Buffer<BUFFER_SIZE> {
+    type Word = u8;
+
+    unsafe fn write_buffer(&mut self) -> (*mut Self::Word, usize) {
+        let ptr = self.buffer.as_mut_ptr();
         (ptr, self.size)
     }
 }
@@ -106,6 +129,7 @@ mod tests {
     use embedded_dma::ReadBuffer;
     use crate::errors::Errors;
     use crate::utils::dma_read_buffer::Buffer;
+    use crate::utils::dma_read_buffer::BufferWriter;
 
     #[test]
     fn test_ptr() {

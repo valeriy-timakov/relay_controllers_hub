@@ -2,8 +2,8 @@
 
 use crate::errors::Errors;
 use crate::hal_ext::rtc_wrapper::{ RelativeSeconds };
-use crate::hal_ext::serial_transfer::{ TxBuffer };
 use crate::utils::{BitsU64, BitsU8};
+use crate::utils::dma_read_buffer::{Buffer, BufferWriter};
 
 
 pub const MAX_RELAYS_COUNT: usize = 16;
@@ -343,7 +343,7 @@ impl DataInstructions {
         }
     }
 
-    pub fn serialize(&self, buffer: &mut TxBuffer) -> Result<(), Errors> {
+    pub fn serialize<B: BufferWriter>(&self, buffer: &mut B) -> Result<(), Errors> {
         match self {
             DataInstructions::RemoteTimestamp(Conversation::Data(value)) => {
                 value.serialize(buffer)
@@ -487,7 +487,7 @@ pub trait Data {
 
     fn parse_from(&mut self, data: &[u8]) -> Result<(), Errors>;
 
-    fn serialize(&self, buffer: &mut TxBuffer)->Result<(), Errors>;
+    fn serialize<B: BufferWriter>(&self, buffer: &mut B)->Result<(), Errors>;
 
     fn default() -> Self where Self: Sized;
 
@@ -519,8 +519,9 @@ impl Data for RelativeSeconds {
         Ok(())
     }
 
+
     #[inline(always)]
-    fn serialize(&self, buffer: &mut TxBuffer) -> Result<(), Errors> {
+    fn serialize<B: BufferWriter>(&self, buffer: &mut B) -> Result<(), Errors> {
         buffer.add_u32(self.value())
     }
 
@@ -575,7 +576,7 @@ impl Extractor for RelativeMillis16 {
     }
 
     // #[inline(always)]
-    // fn serialize(&self, buffer: &mut TxBuffer) -> Result<(), Errors> {
+    // fn serialize<B: BufferWriter>(&self, buffer: &mut B) -> Result<(), Errors> {
     //     buffer.add_u16(self.0)
     // }
 
@@ -589,7 +590,7 @@ impl Extractor for RelativeSeconds8 {
     }
 
     // #[inline(always)]
-    // fn serialize(&self, buffer: &mut TxBuffer) -> Result<(), Errors> {
+    // fn serialize<B: BufferWriter>(&self, buffer: &mut B) -> Result<(), Errors> {
     //     buffer.add_u8(self.0)
     // }
 
@@ -603,7 +604,7 @@ impl Extractor for RelativeSeconds16 {
     }
 
     // #[inline(always)]
-    // fn serialize(&self, buffer: &mut TxBuffer) -> Result<(), Errors> {
+    // fn serialize<B: BufferWriter>(&self, buffer: &mut B) -> Result<(), Errors> {
     //     buffer.add_u16(self.0)
     // }
 
@@ -632,7 +633,7 @@ impl Data for u8 {
     }
 
     #[inline(always)]
-    fn serialize(&self, buffer: &mut TxBuffer) -> Result<(), Errors> {
+    fn serialize<B: BufferWriter>(&self, buffer: &mut B) -> Result<(), Errors> {
         buffer.add_u8(*self)
     }
 
@@ -658,7 +659,7 @@ impl Data for u16 {
         }
 
         #[inline(always)]
-        fn serialize(&self, buffer: &mut TxBuffer) -> Result<(), Errors> {
+        fn serialize<B: BufferWriter>(&self, buffer: &mut B) -> Result<(), Errors> {
             buffer.add_u16(*self)
         }
 
@@ -684,7 +685,7 @@ impl Data for u32 {
     }
 
     #[inline(always)]
-    fn serialize(&self, buffer: &mut TxBuffer) -> Result<(), Errors> {
+    fn serialize<B: BufferWriter>(&self, buffer: &mut B) -> Result<(), Errors> {
         buffer.add_u32(*self)
     }
 
@@ -741,7 +742,7 @@ impl Data for AllData {
         Ok(())
     }
 
-    fn serialize(&self, buffer: &mut TxBuffer) -> Result<(), Errors> {
+    fn serialize<B: BufferWriter>(&self, buffer: &mut B) -> Result<(), Errors> {
         self.id.serialize(buffer)?;
         buffer.add_u8(self.interrupt_pin)?;
         buffer.add_u8(self.relays_count)?;
@@ -792,7 +793,7 @@ impl Data for SwitchCountingSettings {
         }
     }
 
-    fn serialize(&self, buffer: &mut TxBuffer) -> Result<(), Errors> {
+    fn serialize<B: BufferWriter>(&self, buffer: &mut B) -> Result<(), Errors> {
         buffer.add_u16(self.switch_limit_interval.0)?;
         buffer.add_u8(self.max_switch_count)
     }
@@ -857,7 +858,7 @@ impl Data for StateSwitchDatas {
         Ok(())
     }
 
-    fn serialize(&self, buffer: &mut TxBuffer) -> Result<(), Errors> {
+    fn serialize<B: BufferWriter>(&self, buffer: &mut B) -> Result<(), Errors> {
         buffer.add_u8(self.count as u8)?;
         for i in 0..self.count {
             let data = &self.data[i];
@@ -949,7 +950,7 @@ impl Data for ContactsWaitData {
         Ok(())
     }
 
-    fn serialize(&self, buffer: &mut TxBuffer) -> Result<(), Errors> {
+    fn serialize<B: BufferWriter>(&self, buffer: &mut B) -> Result<(), Errors> {
         buffer.add_u8(self.relays_count as u8)?;
         for i in 0..self.relays_count {
             self.contacts_wait_start_timestamps[i].serialize(buffer)?;
@@ -1039,7 +1040,7 @@ impl Data for FixDataContainer {
         Ok(())
     }
 
-    fn serialize(&self, buffer: &mut TxBuffer) -> Result<(), Errors> {
+    fn serialize<B: BufferWriter>(&self, buffer: &mut B) -> Result<(), Errors> {
         buffer.add_u8(self.fix_data_count as u8)?;
         for i in 0..self.fix_data_count {
             let fix_data = &self.fix_data[i];
@@ -1122,7 +1123,7 @@ impl Data for CyclesStatistics {
         }
     }
 
-    fn serialize(&self, buffer: &mut TxBuffer) -> Result<(), Errors> {
+    fn serialize<B: BufferWriter>(&self, buffer: &mut B) -> Result<(), Errors> {
         buffer.add_u16(self.min_cycle_duration.0)?;
         buffer.add_u16(self.max_cycle_duration.0)?;
         buffer.add_u16(self.avg_cycle_duration.0)?;
@@ -1157,7 +1158,7 @@ impl Data for StateFixSettings {
         }
     }
 
-    fn serialize(&self, buffer: &mut TxBuffer) -> Result<(), Errors> {
+    fn serialize<B: BufferWriter>(&self, buffer: &mut B) -> Result<(), Errors> {
         buffer.add_u16(self.switch_try_duration.0)?;
         buffer.add_u8(self.switch_try_count)?;
         buffer.add_u8(self.wait_delay.0)?;
@@ -1220,7 +1221,7 @@ impl Data for State {
         Ok(())
     }
 
-    fn serialize(&self, buffer: &mut TxBuffer) -> Result<(), Errors> {
+    fn serialize<B: BufferWriter>(&self, buffer: &mut B) -> Result<(), Errors> {
         buffer.add_u64(self.data.bits)
     }
 
@@ -1261,7 +1262,7 @@ impl Data for RelaySingleState {
         }
     }
 
-    fn serialize(&self, buffer: &mut TxBuffer) -> Result<(), Errors> {
+    fn serialize<B: BufferWriter>(&self, buffer: &mut B) -> Result<(), Errors> {
         buffer.add_u8(self.data.bits)
     }
 
@@ -1338,7 +1339,7 @@ impl Data for RelayState {
         }
     }
 
-    fn serialize(&self, buffer: &mut TxBuffer) -> Result<(), Errors> {
+    fn serialize<B: BufferWriter>(&self, buffer: &mut B) -> Result<(), Errors> {
         buffer.add_u8(self.data.bits)
     }
 
@@ -1387,7 +1388,7 @@ impl RelaySettings {
         }
     }
 
-    fn serialize(&self, buffer: &mut TxBuffer) -> Result<(), Errors> {
+    fn serialize<B: BufferWriter>(&self, buffer: &mut B) -> Result<(), Errors> {
         buffer.add_u8(self.set_pin.data)?;
         buffer.add_u8(self.monitor_pin.data)?;
         buffer.add_u8(self.control_pin.data)
@@ -1460,7 +1461,7 @@ impl Data for RelaysSettings {
         Ok(())
     }
 
-    fn serialize(&self, buffer: &mut TxBuffer) -> Result<(), Errors> {
+    fn serialize<B: BufferWriter>(&self, buffer: &mut B) -> Result<(), Errors> {
         buffer.add_u8(self.relays.len() as u8)?;
         for setting in self.relays {
             setting.serialize(buffer)?;

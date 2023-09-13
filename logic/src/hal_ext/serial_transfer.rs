@@ -1,128 +1,127 @@
 #![deny(unsafe_code)]
 
-use stm32f4xx_hal::dma::{ChannelX, MemoryToPeripheral, PeripheralToMemory, Transfer};
-use stm32f4xx_hal::serial::{Rx, Tx, Serial, Instance, RxISR, TxISR, RxListen};
-use stm32f4xx_hal::dma::config::DmaConfig;
-use stm32f4xx_hal::dma::traits::{Channel, DMASet, PeriAddress, Stream};
+use embedded_dma::{ReadBuffer, WriteBuffer};
 use crate::errors::Errors;
-use crate::utils::dma_read_buffer::Buffer;
+use core::marker::PhantomData;
 
-const BUFFER_SIZE: usize = 256;
-pub type TxBuffer = Buffer<BUFFER_SIZE>;
-
-pub struct SerialTransfer<U, TxStream, const TX_CHANNEL: u8, RxStream, const RX_CHANNEL: u8>
-    where
-        U: Instance,
-        Tx<U>: PeriAddress<MemSize=u8> + DMASet<TxStream, TX_CHANNEL, MemoryToPeripheral> + TxISR,
-        Rx<U, u8>: PeriAddress<MemSize=u8> + DMASet<RxStream, RX_CHANNEL, PeripheralToMemory> + RxISR + RxListen,
-        TxStream: Stream,
-        ChannelX<TX_CHANNEL>: Channel,
-        RxStream: Stream,
-        ChannelX<RX_CHANNEL>: Channel,
+pub trait Decomposable<T>
 {
-    tx: TxTransfer<U, TxStream, TX_CHANNEL>,
-    rx: RxTransfer<U, RxStream, RX_CHANNEL>,
+    type Container<Y>;
+    fn decompose(self) -> (Self::Container<()>, T);
 }
 
-impl <U, TxStream, const TX_CHANNEL: u8, RxStream, const RX_CHANNEL: u8> SerialTransfer<U, TxStream, TX_CHANNEL, RxStream, RX_CHANNEL>
+pub trait RxTransferProxy<BUF, DmaError>
+where BUF: WriteBuffer,
+      DmaError: Decomposable<BUF>,
+{
+    fn get_fifo_error_flag(&self) -> bool;
+    fn get_transfer_complete_flag(&self) -> bool;
+    fn clear_dma_interrupts(&mut self);
+    fn get_read_butes_count() -> usize;
+    fn next_transfer(&mut self, new_buf: BUF) -> Result<BUF, DmaError>;
+    fn is_idle(&self) -> bool;
+    fn is_rx_not_empty(&self) -> bool;
+    fn clear_idle_interrupt(&self);
+}
+
+pub trait TxTransferProxy<BUF, DmaError>
+where
+    BUF: ReadBuffer,
+    DmaError: Decomposable<BUF>,
+{
+    fn get_fifo_error_flag(&self) -> bool;
+    fn get_transfer_complete_flag(&self) -> bool;
+    fn clear_dma_interrupts(&mut self);
+    fn next_transfer(&mut self, new_buf: BUF) -> Result<BUF, DmaError>;
+}
+
+pub struct SerialTransfer<T, R, TxBuff, RxBuff, DmaErrorT, DmaErrorR>
+where
+    T: TxTransferProxy<TxBuff, DmaErrorT>,
+    R: RxTransferProxy<RxBuff, DmaErrorR>,
+    TxBuff: ReadBuffer,
+    RxBuff: WriteBuffer,
+    DmaErrorR: Decomposable<RxBuff>,
+    DmaErrorT: Decomposable<TxBuff>,
+{
+    tx: TxTransfer<T, TxBuff, DmaErrorT>,
+    rx: RxTransfer<R, RxBuff, DmaErrorR>,
+}
+
+impl <T, R, TxBuff, RxBuff, DmaErrorT, DmaErrorR> SerialTransfer<T, R, TxBuff, RxBuff, DmaErrorT, DmaErrorR>
     where
-        U: Instance,
-        Tx<U>: PeriAddress<MemSize=u8> + DMASet<TxStream, TX_CHANNEL, MemoryToPeripheral> + TxISR,
-        Rx<U, u8>: PeriAddress<MemSize=u8> + DMASet<RxStream, RX_CHANNEL, PeripheralToMemory> + RxISR + RxListen,
-        TxStream: Stream,
-        ChannelX<TX_CHANNEL>: Channel,
-        RxStream: Stream,
-        ChannelX<RX_CHANNEL>: Channel,
+        T: TxTransferProxy<TxBuff, DmaErrorT>,
+        R: RxTransferProxy<RxBuff, DmaErrorR>,
+        TxBuff: ReadBuffer,
+        RxBuff: WriteBuffer,
+        DmaErrorR: Decomposable<RxBuff>,
+        DmaErrorT: Decomposable<TxBuff>,
 {
 
-    pub fn new(
-        serial: Serial<U>,
-        tx_dma_stream: TxStream,
-        rx_dma_stream: RxStream,
-    ) -> Self {
-        let (tx, rx) = serial.split();
-
+    pub fn new(tx_transfer: T, tx_back_buffer: TxBuff, rx_transfer: R, rx_back_buffer: RxBuff) -> Self
+    {
         Self {
-            tx: TxTransfer::new(tx, tx_dma_stream),
-            rx: RxTransfer::new(rx, rx_dma_stream),
+            tx: TxTransfer::new(tx_transfer, tx_back_buffer),
+            rx: RxTransfer::new(rx_transfer, rx_back_buffer),
         }
     }
 
-    pub fn rx(&mut self) -> &mut RxTransfer<U, RxStream, RX_CHANNEL> {
+    pub fn rx(&mut self) -> &mut RxTransfer<R, RxBuff, DmaErrorR> {
         &mut self.rx
     }
 
-    pub fn tx(&mut self) -> &mut TxTransfer<U, TxStream, TX_CHANNEL> {
+    pub fn tx(&mut self) -> &mut TxTransfer<T, TxBuff, DmaErrorT> {
         &mut self.tx
     }
 
-    pub fn split(&mut self) -> (&mut TxTransfer<U, TxStream, TX_CHANNEL>, &mut RxTransfer<U, RxStream, RX_CHANNEL>) {
+    pub fn split(&mut self) -> (&mut TxTransfer<T, TxBuff, DmaErrorT>,
+                                &mut RxTransfer<R, RxBuff, DmaErrorR>) {
         (&mut self.tx, &mut self.rx)
     }
 
-    pub fn into(self) -> (TxTransfer<U, TxStream, TX_CHANNEL>, RxTransfer<U, RxStream, RX_CHANNEL>) {
+    pub fn into(self) -> (TxTransfer<T, TxBuff, DmaErrorT>,
+                          RxTransfer<R, RxBuff, DmaErrorR>) {
         (self.tx, self.rx)
     }
 }
 
-pub type RxBuffer = &'static mut [u8; BUFFER_SIZE];
 
-pub struct RxTransfer<U, STREAM, const CHANNEL: u8>
-    where
-        U: Instance,
-        Rx<U, u8>: PeriAddress<MemSize=u8> + DMASet<STREAM, CHANNEL, PeripheralToMemory> + RxISR + RxListen,
-        STREAM: Stream,
-        ChannelX<CHANNEL>: Channel,
+pub struct RxTransfer<R, BUF, DmaError>
+where
+    R: RxTransferProxy<BUF, DmaError>,
+    BUF: WriteBuffer,
+    DmaError: Decomposable<BUF>,
 {
-    rx_transfer: Transfer<STREAM, CHANNEL, Rx<U>, PeripheralToMemory, RxBuffer>,
-    back_buffer: Option<RxBuffer>,
+    rx_transfer: R,
+    back_buffer: Option<BUF>,
     fifo_error: bool,
     buffer_overflow: bool,
+    _error_buffer_container: PhantomData<DmaError>,
 }
 
-impl<U, STREAM, const CHANNEL: u8> RxTransfer<U, STREAM, CHANNEL>
+impl<R, BUF, DmaError> RxTransfer<R, BUF, DmaError>
     where
-        U: Instance,
-        Rx<U>: PeriAddress<MemSize=u8> + DMASet<STREAM, CHANNEL, PeripheralToMemory> + RxISR + RxListen,
-        STREAM: Stream,
-        ChannelX<CHANNEL>: Channel,
+        R: RxTransferProxy<BUF, DmaError>,
+        BUF: WriteBuffer,
+        DmaError: Decomposable<BUF>,
 {
-    pub fn new(
-        mut rx: Rx<U>,
-        dma_stream: STREAM,
-    ) -> Self {
+    pub fn new(rx_transfer: R, back_buffer: BUF) -> Self {
 
-        rx.listen_idle();
-
-        let rx_buffer1 = cortex_m::singleton!(: [u8; BUFFER_SIZE] = [0; BUFFER_SIZE]).unwrap();
-        let rx_buffer2 = cortex_m::singleton!(: [u8; BUFFER_SIZE] = [0; BUFFER_SIZE]).unwrap();
-
-        let mut rx_transfer: Transfer<STREAM, CHANNEL, Rx<U, u8>, PeripheralToMemory, RxBuffer> = Transfer::init_peripheral_to_memory(
-            dma_stream,
-            rx,
-            rx_buffer1,
-            None,
-            DmaConfig::default()
-                .memory_increment(true)
-                .fifo_enable(true)
-                .fifo_error_interrupt(true)
-                .transfer_complete_interrupt(true),
-        );
-
-        rx_transfer.start(|_stream| {});
+        rx_transfer.start();
 
         Self {
             rx_transfer,
-            back_buffer: Some(rx_buffer2),
+            back_buffer: Some(back_buffer),
             fifo_error: false,
             buffer_overflow: false,
+            _error_buffer_container: PhantomData,
         }
     }
 
-    pub fn get_transferred_buffer(&mut self) -> Result<(RxBuffer, usize), Errors> {
+    pub fn get_transferred_buffer(&mut self) -> Result<(BUF, usize), Errors> {
         if self.rx_transfer.is_idle() {
             self.rx_transfer.clear_idle_interrupt();
-            let bytes_count = BUFFER_SIZE - STREAM::get_number_of_transfers() as usize;
+            let bytes_count = self.rx_transfer.get_read_butes_count() as usize;
             let new_buffer = self.back_buffer.take().unwrap();
             let (buffer, _) = self.rx_transfer.next_transfer(new_buffer).unwrap();
             return Ok((buffer, bytes_count));
@@ -130,7 +129,7 @@ impl<U, STREAM, const CHANNEL: u8> RxTransfer<U, STREAM, CHANNEL>
         Err(Errors::TransferInProgress)
     }
 
-    pub fn return_buffer(&mut self, buffer: RxBuffer) {
+    pub fn return_buffer(&mut self, buffer: BUF) {
         self.back_buffer = Some(buffer);
         self.fifo_error = false;
         self.buffer_overflow = false;
@@ -139,7 +138,7 @@ impl<U, STREAM, const CHANNEL: u8> RxTransfer<U, STREAM, CHANNEL>
     pub fn on_rx_transfer_interrupt<F: FnOnce(&[u8]) -> Result<(), Errors>>(&mut self, receiver: F) -> Result<(), Errors> {
         if self.rx_transfer.is_idle() {
             self.rx_transfer.clear_idle_interrupt();
-            let bytes_count = BUFFER_SIZE - STREAM::get_number_of_transfers() as usize;
+            let bytes_count = self.rx_transfer.get_read_butes_count();
             let new_buffer = self.back_buffer.take().unwrap();
             let (buffer, _) = self.rx_transfer.next_transfer(new_buffer).unwrap();
             let result = receiver(&buffer[..bytes_count]);
@@ -150,11 +149,11 @@ impl<U, STREAM, const CHANNEL: u8> RxTransfer<U, STREAM, CHANNEL>
     }
 
     pub fn on_dma_interrupts(&mut self) {
-        self.rx_transfer.clear_interrupts();
-        if STREAM::get_fifo_error_flag() {
+        self.rx_transfer.clear_dma_interrupts();
+        if self.rx_transfer.get_fifo_error_flag() {
             self.fifo_error = true;
         }
-        if STREAM::get_transfer_complete_flag() {
+        if self.rx_transfer.get_transfer_complete_flag() {
             self.buffer_overflow = true;
         }
     }
@@ -166,53 +165,34 @@ impl<U, STREAM, const CHANNEL: u8> RxTransfer<U, STREAM, CHANNEL>
     }
 }
 
-
-pub struct TxTransfer<U, STREAM, const CHANNEL: u8>
-    where
-        U: Instance,
-        Tx<U, u8>: PeriAddress<MemSize=u8> + DMASet<STREAM, CHANNEL, MemoryToPeripheral> + TxISR,
-        STREAM: Stream,
-        ChannelX<CHANNEL>: Channel,
+pub struct TxTransfer<T, BUF, DmaError>
+where
+    T: TxTransferProxy<BUF, DmaError>,
+    BUF: ReadBuffer,
+    DmaError: Decomposable<BUF>,
 {
-    tx_transfer: Transfer<STREAM, CHANNEL, Tx<U>, MemoryToPeripheral, TxBuffer>,
-    back_buffer: Option<TxBuffer>,
+    tx_transfer: T,
+    back_buffer: Option<BUF>,
     fifo_error: bool,
     last_transfer_ended: bool,
+    _error_buffer_container: PhantomData<DmaError>,
 }
+/*
 
-impl<U, STREAM, const CHANNEL: u8> TxTransfer<U, STREAM, CHANNEL>
+*/
+impl<T, BUF, DmaError> TxTransfer<T, BUF, DmaError>
     where
-        U: Instance,
-        Tx<U, u8>: PeriAddress<MemSize=u8> + DMASet<STREAM, CHANNEL, MemoryToPeripheral> + TxISR,
-        STREAM: Stream,
-        ChannelX<CHANNEL>: Channel,
+        T: TxTransferProxy<BUF, DmaError>,
+        BUF: ReadBuffer,
+        DmaError: Decomposable<BUF>,
 {
-    pub fn new(
-        tx: Tx<U, u8>,
-        dma_stream: STREAM,
-    ) -> Self {
-
-        let tx_buffer2 = Buffer::new(cortex_m::singleton!(: [u8; BUFFER_SIZE] = [0; BUFFER_SIZE]).unwrap());
-
-        let tx_buffer1 = Buffer::new(cortex_m::singleton!(: [u8; BUFFER_SIZE] = [0; BUFFER_SIZE]).unwrap());
-
-        let tx_transfer: Transfer<STREAM, CHANNEL, Tx<U, u8>, MemoryToPeripheral, TxBuffer> = Transfer::init_memory_to_peripheral(
-            dma_stream,
-            tx,
-            tx_buffer1,
-            None,
-            DmaConfig::default()
-                .memory_increment(true)
-                .fifo_enable(true)
-                .fifo_error_interrupt(true)
-                .transfer_complete_interrupt(true),
-        );
-
+    pub fn new(tx_transfer: T, back_buffer: BUF) -> Self {
         Self {
             tx_transfer,
-            back_buffer: Some(tx_buffer2),
+            back_buffer: Some(back_buffer),
             fifo_error: false,
             last_transfer_ended: true,
+            _error_buffer_container: PhantomData,
         }
     }
 
@@ -220,7 +200,7 @@ impl<U, STREAM, const CHANNEL: u8> TxTransfer<U, STREAM, CHANNEL>
     Takes writter function to generate send data and sens them to UART though DMA. Should always return Ok if
     is called from one thread only at the same time.
     */
-    pub fn start_transfer<F: FnOnce(&mut TxBuffer)->Result<(), Errors>>(&mut self, writter: F) -> Result<(), Errors> {
+    pub fn start_transfer<F: FnOnce(&mut BUF)->Result<(), Errors>>(&mut self, writter: F) -> Result<(), Errors> {
         if !self.last_transfer_ended {
             return Err(Errors::TransferInProgress);
         }
@@ -247,10 +227,10 @@ impl<U, STREAM, const CHANNEL: u8> TxTransfer<U, STREAM, CHANNEL>
 
     pub fn on_dma_interrupts(&mut self) {
         self.tx_transfer.clear_interrupts();
-        if STREAM::get_fifo_error_flag() {
+        if  self.tx_transfer.get_fifo_error_flag() {
             self.fifo_error = true;
         }
-        if STREAM::get_transfer_complete_flag() {
+        if  self.tx_transfer.get_transfer_complete_flag() {
             self.last_transfer_ended = true;
         }
     }
