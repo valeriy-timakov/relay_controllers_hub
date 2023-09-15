@@ -4,16 +4,23 @@ use stm32f4xx_hal::dma::{ChannelX, DMAError, MemoryToPeripheral, PeripheralToMem
 use stm32f4xx_hal::dma::traits::{Channel, DMASet, PeriAddress, Stream};
 use stm32f4xx_hal::serial::{Instance, Rx, RxISR, RxListen, Tx, TxISR};
 use stm32f4xx_hal::dma::config::DmaConfig;
-use crate::hal_ext::serial_transfer::{Decomposable, RxTransferProxy, SerialTransfer, TxTransferProxy};
+use crate::hal_ext::serial_transfer::{Decomposable, ReadableBuffer, RxTransferProxy, SerialTransfer, TxTransferProxy};
 use crate::utils::dma_read_buffer::Buffer;
 use core::marker::PhantomData;
+use crate::errors;
 
 
 const BUFFER_SIZE: usize = 256;
 pub type TxBuffer = Buffer<BUFFER_SIZE>;
 pub type RxBuffer = &'static mut [u8; BUFFER_SIZE];
 
-impl<U, STREAM, const CHANNEL: u8> TxTransferProxy<TxBuffer, DMAError<TxBuffer>> for
+impl ReadableBuffer for RxBuffer {
+    fn slice_to(&self, to: usize) -> &[u8] {
+        &self[..to]
+    }
+}
+
+impl<U, STREAM, const CHANNEL: u8> TxTransferProxy<TxBuffer> for
 Transfer<STREAM, CHANNEL, Tx<U>, MemoryToPeripheral, TxBuffer>
     where
         U: Instance,
@@ -21,36 +28,32 @@ Transfer<STREAM, CHANNEL, Tx<U>, MemoryToPeripheral, TxBuffer>
         STREAM: Stream,
         ChannelX<CHANNEL>: Channel,
 {
+    #[inline(always)]
     fn get_fifo_error_flag(&self) -> bool {
         STREAM::get_fifo_error_flag()
     }
 
+    #[inline(always)]
     fn get_transfer_complete_flag(&self) -> bool {
         STREAM::get_transfer_complete_flag()
     }
 
+    #[inline(always)]
     fn clear_dma_interrupts(&mut self) {
         self.clear_interrupts();
     }
 
-    fn next_transfer(&mut self, buffer: TxBuffer) -> Result<TxBuffer, DMAError<TxBuffer>> {
+    #[inline(always)]
+    fn next_transfer(&mut self, buffer: TxBuffer) -> Result<TxBuffer, errors::DMAError<TxBuffer>> {
         self.next_transfer(buffer)
             .map(|(buffer, _)| { buffer } )
+            .map_err(convert_dma_error )
     }
 
 }
 
-impl <T> Decomposable<T> for DMAError<T> {
-    type Container<Y> = DMAError<Y>;
 
-    #[inline(always)]
-    fn decompose(self) -> (Self::Container<()>, T) {
-        self.decompose()
-    }
-
-}
-
-impl<U, STREAM, const CHANNEL: u8> RxTransferProxy<RxBuffer, DMAError<RxBuffer>> for
+impl<U, STREAM, const CHANNEL: u8> RxTransferProxy<RxBuffer> for
 Transfer<STREAM, CHANNEL, Rx<U>, PeripheralToMemory, RxBuffer>
     where
         U: Instance,
@@ -59,33 +62,56 @@ Transfer<STREAM, CHANNEL, Rx<U>, PeripheralToMemory, RxBuffer>
         ChannelX<CHANNEL>: Channel,
 {
 
+    #[inline(always)]
     fn get_fifo_error_flag(&self) -> bool {
         STREAM::get_fifo_error_flag()
     }
+
+    #[inline(always)]
     fn get_transfer_complete_flag(&self) -> bool {
         STREAM::get_transfer_complete_flag()
     }
+
+    #[inline(always)]
     fn clear_dma_interrupts(&mut self) {
         self.clear_interrupts();
     }
-    fn get_read_butes_count() -> usize {
-        BUFFER_SIZE - STREAM::get_number_of_transfers()
+
+    #[inline(always)]
+    fn get_read_bytes_count(&self) -> usize {
+        BUFFER_SIZE - STREAM::get_number_of_transfers() as usize
     }
-    fn next_transfer(&mut self, new_buf: RxBuffer) -> Result<RxBuffer, DMAError<RxBuffer>> {
+
+    #[inline(always)]
+    fn next_transfer(&mut self, new_buf: RxBuffer) -> Result<RxBuffer, errors::DMAError<RxBuffer>> {
         self.next_transfer(new_buf)
             .map(|(buffer, _)| { buffer } )
+            .map_err(convert_dma_error )
     }
+
+    #[inline(always)]
     fn is_idle(&self) -> bool {
-        self.is_idle()
+        (self as &RxISR).is_idle()
     }
 
+    #[inline(always)]
     fn is_rx_not_empty(&self) -> bool {
-        self.is_rx_not_empty()
-    }
-    fn clear_idle_interrupt(&self) {
-        self.clear_idle_interrupt()
+        (self as &RxISR).is_rx_not_empty()
     }
 
+    #[inline(always)]
+    fn clear_idle_interrupt(&self) {
+        (self as &RxISR).clear_idle_interrupt()
+    }
+
+}
+
+fn convert_dma_error<T>(e: DMAError<T>) -> errors::DMAError<T> {
+    match e {
+        DMAError::NotReady(t) => errors::DMAError::NotReady(t),
+        DMAError::SmallBuffer(t) => errors::DMAError::SmallBuffer(t),
+        DMAError::Overrun(t) => errors::DMAError::Overrun(t),
+    }
 }
 
 
@@ -123,7 +149,7 @@ impl<U, TxStream, const TX_CHANNEL: u8, RxStream, const RX_CHANNEL: u8> SerialTr
     ) -> SerialTransfer<
         Transfer<TxStream, TX_CHANNEL, Tx<U, u8>, MemoryToPeripheral, TxBuffer>,
         Transfer<RxStream, RX_CHANNEL, Rx<U, u8>, PeripheralToMemory, RxBuffer>,
-        TxBuffer, RxBuffer, DMAError<TxBuffer>, DMAError<RxBuffer>
+        TxBuffer, RxBuffer
     > {
 
         let tx_buffer1 = Buffer::new(cortex_m::singleton!(: [u8; BUFFER_SIZE] = [0; BUFFER_SIZE]).unwrap());
@@ -163,7 +189,7 @@ impl<U, TxStream, const TX_CHANNEL: u8, RxStream, const RX_CHANNEL: u8> SerialTr
         mut rx: Rx<U>,
         dma_stream: RxStream,
         rx_buffer1: RxBuffer,
-    ) -> Self {
+    ) -> Transfer<RxStream, RX_CHANNEL, Rx<U, u8>, PeripheralToMemory, RxBuffer> {
 
         rx.listen_idle();
 

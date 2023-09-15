@@ -9,9 +9,8 @@ use embedded_dma::{ReadBuffer, WriteBuffer};
 use crate::services::slave_controller_link::domain::{*};
 use crate::errors::Errors;
 use crate::hal_ext::rtc_wrapper::{RelativeMillis, RelativeSeconds };
-use crate::hal_ext::serial_transfer::{Decomposable, RxTransfer, RxTransferProxy, SerialTransfer, TxTransfer, TxTransferProxy};
-
-
+use crate::hal_ext::serial_transfer::{Decomposable, ReadableBuffer, RxTransfer, RxTransferProxy, SerialTransfer, TxTransfer, TxTransferProxy};
+use crate::utils::dma_read_buffer::BufferWriter;
 
 
 const fn max_of(size1: usize, size2: usize, size3: usize, size4: usize, size5: usize, ) -> usize {
@@ -49,33 +48,28 @@ pub trait SignalsReceiver {
     fn on_request_response(&mut self, request: &SentRequest, response: DataInstructions);
 }
 
-pub struct SlaveControllerLink<T, R, TxBuff, RxBuff, DmaErrorT, DmaErrorR, SR>
+pub struct SlaveControllerLink<T, R, TxBuff, RxBuff, SR>
     where
-        TxBuff: ReadBuffer,
-        RxBuff: WriteBuffer,
-        DmaErrorR: Decomposable<RxBuff>,
-        DmaErrorT: Decomposable<TxBuff>,
-        T: TxTransferProxy<TxBuff, DmaErrorT>,
-        R: RxTransferProxy<RxBuff, DmaErrorR>,
+        TxBuff: ReadBuffer + BufferWriter,
+        RxBuff: WriteBuffer + ReadableBuffer,
+        T: TxTransferProxy<TxBuff>,
+        R: RxTransferProxy<RxBuff>,
         SR: SignalsReceiver,
 {
-    tx: TransmitterToSlaveController<T, TxBuff, DmaErrorT>,
-    rx: ReceiverFromSlaveController<R, RxBuff, DmaErrorR, SR>,
+    tx: TransmitterToSlaveController<T, TxBuff>,
+    rx: ReceiverFromSlaveController<R, RxBuff, SR>,
 }
 
 
-impl <T, R, TxBuff, RxBuff, DmaErrorT, DmaErrorR, SR>
-SlaveControllerLink<T, R,TxBuff, RxBuff, DmaErrorT, DmaErrorR,  SR>
+impl <T, R, TxBuff, RxBuff, SR> SlaveControllerLink<T, R,TxBuff, RxBuff,  SR>
     where
-        TxBuff: ReadBuffer,
-        RxBuff: WriteBuffer,
-        DmaErrorR: Decomposable<RxBuff>,
-        DmaErrorT: Decomposable<TxBuff>,
-        T: TxTransferProxy<TxBuff, DmaErrorT>,
-        R: RxTransferProxy<RxBuff, DmaErrorR>,
+        TxBuff: ReadBuffer + BufferWriter,
+        RxBuff: WriteBuffer + ReadableBuffer,
+        T: TxTransferProxy<TxBuff>,
+        R: RxTransferProxy<RxBuff>,
         SR: SignalsReceiver,
 {
-    pub fn create (serial_transfer: SerialTransfer<T, R, TxBuff, RxBuff, DmaErrorT, DmaErrorR>, signal_receiver: SR) -> Result<Self, Errors> {
+    pub fn create(serial_transfer: SerialTransfer<T, R, TxBuff, RxBuff>, signal_receiver: SR) -> Result<Self, Errors> {
         let (tx, rx) = serial_transfer.into();
         Ok(Self {
             tx: TransmitterToSlaveController::new(tx),
@@ -83,7 +77,7 @@ SlaveControllerLink<T, R,TxBuff, RxBuff, DmaErrorT, DmaErrorR,  SR>
         })
     }
 
-    pub fn on_get_command<TS:  FnOnce() -> RelativeMillis>( &mut self, time_src: TS) -> Result<(), Errors> {
+    pub fn on_get_command<E, TS:  FnOnce() -> RelativeMillis>( &mut self, time_src: TS) -> Result<(), Errors> {
         self.rx.on_get_command(&mut self.tx, time_src)
     }
 
@@ -114,25 +108,23 @@ impl SentRequest {
 
 const MAX_REQUESTS_COUNT: usize = 4;
 
-struct TransmitterToSlaveController<T, TxBuff, DmaError>
+struct TransmitterToSlaveController<T, TxBuff>
     where
-        TxBuff: ReadBuffer,
-        DmaError: Decomposable<TxBuff>,
-        T: TxTransferProxy<TxBuff, DmaError>,
+        TxBuff: ReadBuffer + BufferWriter,
+        T: TxTransferProxy<TxBuff>,
 {
-    tx: TxTransfer<T, TxBuff, DmaError>,
+    tx: TxTransfer<T, TxBuff>,
     sent_requests: [Option<SentRequest>; MAX_REQUESTS_COUNT],
     requests_count: usize,
     request_needs_cache_send: bool,
 }
 
-impl <T, TxBuff, DmaError> TransmitterToSlaveController<T, TxBuff, DmaError>
+impl <T, TxBuff> TransmitterToSlaveController<T, TxBuff>
     where
-        TxBuff: ReadBuffer,
-        DmaError: Decomposable<TxBuff>,
-        T: TxTransferProxy<TxBuff, DmaError>,
+        TxBuff: ReadBuffer + BufferWriter,
+        T: TxTransferProxy<TxBuff>,
 {
-    pub fn new (tx: TxTransfer<T, TxBuff, DmaError>) -> Self {
+    pub fn new (tx: TxTransfer<T, TxBuff>) -> Self {
         Self {
             tx,
             sent_requests: [None, None, None, None],
@@ -183,26 +175,24 @@ impl <T, TxBuff, DmaError> TransmitterToSlaveController<T, TxBuff, DmaError>
 
 }
 
-struct ReceiverFromSlaveController<R, RxBuff, DmaError, SR>
+struct ReceiverFromSlaveController<R, RxBuff, SR>
     where
-        RxBuff: WriteBuffer,
-        DmaError: Decomposable<RxBuff>,
-        R: RxTransferProxy<RxBuff, DmaError>,
+        RxBuff: WriteBuffer + ReadableBuffer,
+        R: RxTransferProxy<RxBuff>,
         SR: SignalsReceiver,
 {
-    rx: RxTransfer<R, RxBuff, DmaError>,
+    rx: RxTransfer<R, RxBuff>,
     signal_receiver: SR,
     static_buffers_idx: usize
 }
 
-impl <R, RxBuff, DmaError, SR> ReceiverFromSlaveController<R, RxBuff, DmaError, SR>
+impl <R, RxBuff, SR> ReceiverFromSlaveController<R, RxBuff, SR>
     where
-        RxBuff: WriteBuffer,
-        DmaError: Decomposable<RxBuff>,
-        R: RxTransferProxy<RxBuff, DmaError>,
+        RxBuff: WriteBuffer + ReadableBuffer,
+        R: RxTransferProxy<RxBuff>,
         SR: SignalsReceiver,
 {
-    pub fn create (rx: RxTransfer<R, RxBuff, DmaError>, signal_receiver: SR) -> Result<Self, Errors> {
+    pub fn create(rx: RxTransfer<R, RxBuff>, signal_receiver: SR) -> Result<Self, Errors> {
         let static_buffers_idx = unsafe {
             if INSTANCES_COUNT >= MAX_INSTANCES_COUNT {
                 return Err(Errors::SlaveControllersInstancesMaxCountReached);
@@ -216,12 +206,12 @@ impl <R, RxBuff, DmaError, SR> ReceiverFromSlaveController<R, RxBuff, DmaError, 
 
     pub fn on_get_command<T, TS, TxBuff>(
             &mut self,
-            tx:  &mut TransmitterToSlaveController<T, TxBuff, DmaError>,
-            time_src: TS) -> Result<(), Errors>
+            tx:  &mut TransmitterToSlaveController<T, TxBuff>,
+            time_src: TS)
+        -> Result<(), Errors>
         where
-            TxBuff: ReadBuffer,
-            DmaError: Decomposable<TxBuff>,
-            T: TxTransferProxy<TxBuff, DmaError>,
+            TxBuff: ReadBuffer + BufferWriter,
+            T: TxTransferProxy<TxBuff>,
             TS: FnOnce() -> RelativeMillis,
     {
         let ReceiverFromSlaveController { rx, signal_receiver, static_buffers_idx } = self;
