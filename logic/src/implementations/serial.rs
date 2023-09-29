@@ -91,17 +91,17 @@ Transfer<STREAM, CHANNEL, Rx<U>, PeripheralToMemory, RxBuffer>
 
     #[inline(always)]
     fn is_idle(&self) -> bool {
-        (self as &RxISR).is_idle()
+        (self as &dyn RxISR).is_idle()
     }
 
     #[inline(always)]
     fn is_rx_not_empty(&self) -> bool {
-        (self as &RxISR).is_rx_not_empty()
+        (self as &dyn RxISR).is_rx_not_empty()
     }
 
     #[inline(always)]
-    fn clear_idle_interrupt(&self) {
-        (self as &RxISR).clear_idle_interrupt()
+    fn clear_idle_interrupt(&mut self) {
+        (self as &dyn RxISR).clear_idle_interrupt()
     }
 
 }

@@ -23,5 +23,6 @@ postcard = { version = "0.5.2", features = ["alloc"] }
 quickcheck = "1"
 quickcheck_macros = "1"
 embedded-hal-mock = "0.9.0"
+rand = "0.8.5"
 
 

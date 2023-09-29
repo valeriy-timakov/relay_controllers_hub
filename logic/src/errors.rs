@@ -3,7 +3,7 @@
 
 use crate::hal_ext::serial_transfer::Decomposable;
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Copy, Clone)]
 pub enum Errors {
     NoBufferAvailable,
     TransferInProgress,
@@ -27,7 +27,7 @@ pub enum Errors {
     InstructionNotSerializable,
 }
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Copy, Clone)]
 pub enum DMAError<T> {
     /// DMA not ready to change buffers.
     NotReady(T),

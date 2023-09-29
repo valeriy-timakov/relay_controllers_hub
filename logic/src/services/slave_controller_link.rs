@@ -374,16 +374,16 @@ impl CashedInstructionGetter for AllDataCashedInstructionGetter {
 
 const INSTRUCTIONS_COUNT: usize = DataInstructionCodes::Last as usize;
 
-static mut df: [Option<Box<dyn CashedInstructionGetter>>; INSTRUCTIONS_COUNT] = [None, None, None, None, None, None, None,
+static mut DF: [Option<Box<dyn CashedInstructionGetter>>; INSTRUCTIONS_COUNT] = [None, None, None, None, None, None, None,
     None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None];
 
 fn init_cache_getters() {
     unsafe {
-        df[DataInstructionCodes::Settings as usize] = Some(Box::new(RelasySettingsCashedInstructionGetter));
-        df[DataInstructionCodes::ContactWaitData as usize] = Some(Box::new(ContactsWaitDataCashedInstructionGetter));
-        df[DataInstructionCodes::SwitchData as usize] = Some(Box::new(StateSwitchDataCashedInstructionGetter));
-        df[DataInstructionCodes::FixData as usize] = Some(Box::new(FixDataContainerCashedInstructionGetter));
-        df[DataInstructionCodes::All as usize] = Some(Box::new(AllDataCashedInstructionGetter));
+        DF[DataInstructionCodes::Settings as usize] = Some(Box::new(RelasySettingsCashedInstructionGetter));
+        DF[DataInstructionCodes::ContactWaitData as usize] = Some(Box::new(ContactsWaitDataCashedInstructionGetter));
+        DF[DataInstructionCodes::SwitchData as usize] = Some(Box::new(StateSwitchDataCashedInstructionGetter));
+        DF[DataInstructionCodes::FixData as usize] = Some(Box::new(FixDataContainerCashedInstructionGetter));
+        DF[DataInstructionCodes::All as usize] = Some(Box::new(AllDataCashedInstructionGetter));
     }
 }
 
@@ -396,7 +396,7 @@ fn request_needs_cache(instruction: DataInstructionCodes) -> bool {
 
 fn cache_getter(code: DataInstructionCodes) -> Option< &'static Box<dyn CashedInstructionGetter>> {
     unsafe {
-        df[code as usize].as_ref()
+        DF[code as usize].as_ref()
     }
 }
 
