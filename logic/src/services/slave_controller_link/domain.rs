@@ -11,7 +11,7 @@ pub const SWITCHES_DATA_BUFFER_SIZE: usize = 50;
 
 
 #[repr(u8)]
-#[derive(Copy, Clone, PartialEq)]
+#[derive(Copy, Clone, PartialEq, Debug)]
 pub enum Operation {
     None = 0x00,
     Read = 0x01,
@@ -41,7 +41,7 @@ pub enum Commands {
 }
 
 #[repr(u8)]
-#[derive(Copy, Clone, PartialEq)]
+#[derive(Copy, Clone, PartialEq, Debug)]
 pub enum DataInstructionCodes {
     None = 0x00,
     Settings = 0x01,
@@ -115,6 +115,11 @@ impl DataInstructionCodes {
     }
 }
 
+pub trait DataInstruction {
+    fn code(&self) -> DataInstructionCodes;
+    fn serialize<B: BufferWriter>(&self, buffer: &mut B) -> Result<(), Errors>;
+}
+
 #[repr(u8)]
 pub enum DataInstructions {
     Settings(Conversation<EmptyRequest, RelaysSettings>) = DataInstructionCodes::Settings as u8,
@@ -139,10 +144,8 @@ pub enum DataInstructions {
     All(Conversation<EmptyRequest, AllData>) = DataInstructionCodes::All as u8,
 }
 
-
-
 impl DataInstructions {
-    pub fn discriminant(&self) -> u8 {
+    fn discriminant(&self) -> u8 {
         unsafe { *(self as *const Self as *const u8) }
     }
 
@@ -407,6 +410,20 @@ impl DataInstructions {
                 Err(Errors::InstructionNotSerializable)
             }
         }
+    }
+
+}
+
+impl DataInstruction for DataInstructions {
+
+    #[inline(always)]
+    fn code(&self) -> DataInstructionCodes {
+        self.code()
+    }
+
+    #[inline(always)]
+    fn serialize<B: BufferWriter>(&self, buffer: &mut B) -> Result<(), Errors> {
+        self.serialize(buffer)
     }
 
 }

@@ -84,6 +84,10 @@ impl <T, R, TxBuff, RxBuff> SerialTransfer<T, R, TxBuff, RxBuff>
     }
 }
 
+pub trait Receiver {
+    fn on_rx_transfer_interrupt<F: FnOnce(&[u8]) -> Result<(), Errors>> (&mut self, receiver: F) -> Result<(), Errors>;
+}
+
 
 pub struct RxTransfer<R, BUF>
 where
@@ -110,7 +114,36 @@ impl<R, BUF> RxTransfer<R, BUF>
         }
     }
 
-    pub fn on_rx_transfer_interrupt<F> (&mut self, receiver: F) -> Result<(), Errors>
+    pub fn on_dma_interrupts(&mut self) {
+        self.rx_transfer.clear_dma_interrupts();
+        if self.rx_transfer.get_fifo_error_flag() {
+            self.fifo_error = true;
+        }
+        if self.rx_transfer.get_transfer_complete_flag() {
+            self.buffer_overflow = true;
+        }
+    }
+    pub fn fifo_error(&self) -> bool {
+        self.fifo_error
+    }
+    pub fn buffer_overflow(&self) -> bool {
+        self.buffer_overflow
+    }
+
+    fn return_buffer(&mut self, buffer: BUF) {
+        self.back_buffer = Some(buffer);
+        self.fifo_error = false;
+        self.buffer_overflow = false;
+    }
+}
+
+impl <R, BUF> Receiver for RxTransfer<R, BUF>
+    where
+        R: RxTransferProxy<BUF>,
+        BUF: WriteBuffer + ReadableBuffer,
+{
+
+    fn on_rx_transfer_interrupt<F> (&mut self, receiver: F) -> Result<(), Errors>
         where
             F: FnOnce(&[u8]) -> Result<(), Errors>
     {
@@ -135,27 +168,10 @@ impl<R, BUF> RxTransfer<R, BUF>
         Err(Errors::TransferInProgress)
     }
 
-    pub fn on_dma_interrupts(&mut self) {
-        self.rx_transfer.clear_dma_interrupts();
-        if self.rx_transfer.get_fifo_error_flag() {
-            self.fifo_error = true;
-        }
-        if self.rx_transfer.get_transfer_complete_flag() {
-            self.buffer_overflow = true;
-        }
-    }
-    pub fn fifo_error(&self) -> bool {
-        self.fifo_error
-    }
-    pub fn buffer_overflow(&self) -> bool {
-        self.buffer_overflow
-    }
+}
 
-    fn return_buffer(&mut self, buffer: BUF) {
-        self.back_buffer = Some(buffer);
-        self.fifo_error = false;
-        self.buffer_overflow = false;
-    }
+pub trait Sender<BUF: ReadBuffer + BufferWriter> {
+    fn start_transfer<F: FnOnce(&mut BUF)->Result<(), Errors>>(&mut self, writter: F) -> Result<(), Errors>;
 }
 
 pub struct TxTransfer<T, BUF>
@@ -168,9 +184,8 @@ where
     fifo_error: bool,
     last_transfer_ended: bool,
 }
-/*
 
-*/
+
 impl<T, BUF> TxTransfer<T, BUF>
     where
         T: TxTransferProxy<BUF>,
@@ -185,14 +200,35 @@ impl<T, BUF> TxTransfer<T, BUF>
         }
     }
 
+    pub fn on_dma_interrupts(&mut self) {
+        self.tx_transfer.clear_dma_interrupts();
+        if  self.tx_transfer.get_fifo_error_flag() {
+            self.fifo_error = true;
+        }
+        if  self.tx_transfer.get_transfer_complete_flag() {
+            self.last_transfer_ended = true;
+        }
+    }
+
+    pub fn fifo_error(&self) -> bool {
+        self.fifo_error
+    }
+    pub fn last_transfer_ended(&self) -> bool {
+        self.last_transfer_ended
+    }
+}
+
+impl<T, BUF> Sender<BUF> for TxTransfer<T, BUF>
+    where
+        T: TxTransferProxy<BUF>,
+        BUF: ReadBuffer + BufferWriter,
+{
+
     /**
     Takes writter function to generate send data and sens them to UART though DMA. Should always return Ok if
     is called from one thread only at the same time.
-    */
-    pub fn start_transfer<F: FnOnce(&mut BUF)->Result<(), Errors>>(&mut self, writter: F) -> Result<(), Errors>
-        where
-            F: FnOnce(&mut BUF) -> Result<(), Errors>
-    {
+     */
+    fn start_transfer<F: FnOnce(&mut BUF)->Result<(), Errors>>(&mut self, writter: F) -> Result<(), Errors> {
         if !self.last_transfer_ended && !self.fifo_error {
             return Err(Errors::TransferInProgress);
         }
@@ -220,21 +256,6 @@ impl<T, BUF> TxTransfer<T, BUF>
         }
     }
 
-    pub fn on_dma_interrupts(&mut self) {
-        self.tx_transfer.clear_dma_interrupts();
-        if  self.tx_transfer.get_fifo_error_flag() {
-            self.fifo_error = true;
-        }
-        if  self.tx_transfer.get_transfer_complete_flag() {
-            self.last_transfer_ended = true;
-        }
-    }
-    pub fn fifo_error(&self) -> bool {
-        self.fifo_error
-    }
-    pub fn last_transfer_ended(&self) -> bool {
-        self.last_transfer_ended
-    }
 }
 
 
@@ -400,7 +421,6 @@ mod tests {
 
     struct MockTxBuffer {
         number: u8,
-        size: usize,
         buffer: [u8; BUFFER_SIZE],
         cleared: bool,
     }
@@ -417,73 +437,33 @@ mod tests {
     impl BufferWriter for MockTxBuffer {
 
 
-        #[inline(always)]
         fn add_str(&mut self, string: &str) -> Result<(), Errors> {
-            self.add(string.as_bytes())
+            Ok(())
         }
 
         fn add(&mut self, data: &[u8]) -> Result<(), Errors> {
-            if data.len() > BUFFER_SIZE - self.size {
-                return Err(Errors::DmaBufferOverflow);
-            }
-            data.iter().for_each(|byte| {
-                self.buffer[self.size] = *byte;
-                self.size += 1;
-            });
             Ok(())
         }
 
-        #[inline]
         fn add_u8(&mut self, byte: u8) -> Result<(), Errors> {
-            if 1 > BUFFER_SIZE - self.size {
-                return Err(Errors::DmaBufferOverflow);
-            }
-            self.buffer[self.size] = byte;
-            self.size += 1;
             Ok(())
         }
 
-        #[inline]
         fn add_u16(&mut self, value: u16) -> Result<(), Errors> {
-            if 2 > BUFFER_SIZE - self.size {
-                return Err(Errors::DmaBufferOverflow);
-            }
-            self.buffer[self.size] = ((value >> 8) & 0xff) as u8;
-            self.size += 1;
-            self.buffer[self.size] = (value & 0xff) as u8;
-            self.size += 1;
             Ok(())
         }
 
-        #[inline]
         fn add_u32(&mut self, value: u32) -> Result<(), Errors> {
-            if 4 > BUFFER_SIZE - self.size {
-                return Err(Errors::DmaBufferOverflow);
-            }
-            for i in 0..4 {
-                self.buffer[self.size] = ((value >> (24 - i * 8)) & 0xff) as u8;
-                self.size += 1;
-            }
             Ok(())
         }
 
-        #[inline]
         fn add_u64(&mut self, value: u64) -> Result<(), Errors> {
-            if 8 > BUFFER_SIZE - self.size {
-                return Err(Errors::DmaBufferOverflow);
-            }
-            for i in 0..8 {
-                self.buffer[self.size] = ((value >> (56 - i * 8)) & 0xff) as u8;
-                self.size += 1;
-            }
             Ok(())
         }
 
         fn clear(&mut self) {
             self.cleared = true;
-            self.size = 0;
         }
-
 
     }
 
@@ -491,16 +471,8 @@ mod tests {
         fn new(number: u8) -> Self {
             Self {
                 number,
-                size: 0,
                 buffer: [0_u8; BUFFER_SIZE],
                 cleared: false,
-            }
-        }
-
-        fn set(&mut self, value: &[u8]) {
-            let len = min(value.len(), self.buffer.len());
-            for i in 0..len {
-                self.buffer[i] = value[i];
             }
         }
     }
