@@ -25,7 +25,7 @@ pub enum Operation {
 }
 
 #[repr(u8)]
-#[derive(Copy, Clone, PartialEq)]
+#[derive(Copy, Clone, PartialEq, Debug)]
 pub enum Signals {
     None = 0x00,
     GetTimeStamp = 0x14,
@@ -429,7 +429,7 @@ impl DataInstruction for DataInstructions {
 }
 
 #[repr(u8)]
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, PartialEq, Debug)]
 pub enum ErrorCode {
     OK = 0x00,
     ERequestDataNoValue = 0x01,

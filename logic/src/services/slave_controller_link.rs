@@ -11,7 +11,7 @@ use crate::hal_ext::serial_transfer::{ ReadableBuffer, Receiver, RxTransfer, RxT
 use crate::services::slave_controller_link::parsers::{RequestsParser, RequestsParserImpl, SignalsParser, SignalsParserImpl};
 use crate::utils::dma_read_buffer::BufferWriter;
 
-#[derive(Copy, Clone, PartialEq)]
+#[derive(Copy, Clone, PartialEq, Debug)]
 pub struct SignalData {
     instruction: Signals,
     relay_signal_data: Option<RelaySignalData>,
@@ -367,48 +367,50 @@ trait ReceiverFromSlaveControllerAbstract<SR, Rc, RCR, SP>
     fn on_get_command(&mut self, request_controller: &mut RCR) -> Result<(), Errors> {
         let (rx, sr, signal_pargser) = self.slice();
         rx.on_rx_transfer_interrupt(|data| {
-            if data.len() > 3 && data[0] == Operation::None as u8 {
-                let operation_code = data[1];
-                let instruction_code = data[2];
-                let data = &data[3..];
-                if operation_code == Operation::Signal as u8 {
-                    let instruction = if instruction_code == Signals::MonitoringStateChanged as u8 {
-                        Some(Signals::MonitoringStateChanged)
-                    } else  if instruction_code == Signals::StateFixTry as u8 {
-                        Some(Signals::StateFixTry)
-                    } else  if instruction_code == Signals::ControlStateChanged as u8 {
-                        Some(Signals::ControlStateChanged)
-                    } else  if instruction_code == Signals::RelayStateChanged as u8 {
-                        Some(Signals::RelayStateChanged)
-                    } else  if instruction_code == Signals::GetTimeStamp as u8 {
-                        Some(Signals::GetTimeStamp)
-                    } else {
-                        None
-                    };
-                    match instruction {
-                        Some(instruction) => {
-                            match signal_pargser.parse(instruction, data) {
-                                Ok(signal_data) => {
-                                    sr.on_signal(signal_data);
-                                    Ok(())
-                                }
-                                Err(error) => {
-                                    sr.on_signal_error(Some(instruction), error, false);
-                                    Err(Errors::DataCorrupted)
+            if data.len() >= 3 {
+                if data[0] == Operation::None as u8 {
+                    let operation_code = data[1];
+                    let instruction_code = data[2];
+                    let data = &data[3..];
+                    if operation_code == Operation::Signal as u8 {
+                        let instruction = if instruction_code == Signals::MonitoringStateChanged as u8 {
+                            Some(Signals::MonitoringStateChanged)
+                        } else if instruction_code == Signals::StateFixTry as u8 {
+                            Some(Signals::StateFixTry)
+                        } else if instruction_code == Signals::ControlStateChanged as u8 {
+                            Some(Signals::ControlStateChanged)
+                        } else if instruction_code == Signals::RelayStateChanged as u8 {
+                            Some(Signals::RelayStateChanged)
+                        } else if instruction_code == Signals::GetTimeStamp as u8 {
+                            Some(Signals::GetTimeStamp)
+                        } else {
+                            None
+                        };
+                        match instruction {
+                            Some(instruction) => {
+                                match signal_pargser.parse(instruction, data) {
+                                    Ok(signal_data) => {
+                                        sr.on_signal(signal_data);
+                                        Ok(())
+                                    }
+                                    Err(error) => {
+                                        sr.on_signal_error(Some(instruction), error, false);
+                                        Err(Errors::DataCorrupted)
+                                    }
                                 }
                             }
+                            None => {
+                                sr.on_signal_error(None, ErrorCode::EInstructionUnrecognized, false);
+                                Err(Errors::InstructionNotRecognized(instruction_code))
+                            }
                         }
-                        None => {
-                            sr.on_signal_error(None, ErrorCode::EInstructionUnrecognized, false);
-                            Err(Errors::InstructionNotRecognized(instruction_code))
-                        }
+                    } else if operation_code == Operation::Success as u8 || operation_code == Operation::Response as u8 || operation_code == Operation::Error as u8 {
+                        request_controller.process_response(operation_code, instruction_code, data)
+                    } else {
+                        Err(Errors::OperationNotRecognized(operation_code))
                     }
-                } else if operation_code == Operation::Success as u8 || operation_code == Operation::Response as u8 || operation_code == Operation::Error as u8 {
-                    request_controller.process_response(operation_code, instruction_code, data)
-                } else if operation_code == Operation::Response as u8 {
-                    Ok(())
                 } else {
-                    Err(Errors::OperationNotRecognized(operation_code))
+                    Err(Errors::CommandDataCorrupted)
                 }
             } else {
                 Err(Errors::NotEnoughDataGot)
@@ -619,72 +621,208 @@ mod tests {
             assert_eq!(Err(error), result);
         }
     }
+
     #[test]
-    fn test_on_get_command() {
-        let operation_code = Operation::Signal as u8;
-        let instruction_code = Signals::GetTimeStamp as u8;
-        let mut mock = MockReceiverFromSlaveController::create([
-            operation_code, instruction_code, 3]);
+    fn test_on_get_command_should_return_not_enough_data_error_on_low_bytes_message() {
+
+        let datas = Vec::from([[].to_vec(), [1].to_vec(), [1, 2].to_vec()]);
+
+        for data in datas {
+            let mut mock = MockReceiverFromSlaveController::create(data);
+
+            let mut request_controller = MockRequestsControllerRx::new(Ok(()));
+
+            let result = mock.on_get_command(&mut request_controller);
+
+            assert_eq!(true, mock.rx.on_rx_transfer_interrupt_called);
+            assert_eq!(Err(Errors::NotEnoughDataGot), result);
+            assert_eq!(Err(Errors::NotEnoughDataGot), mock.rx.receiver_result.unwrap());
+            assert_eq!(false, request_controller.process_response_called);
+            assert_eq!(None, mock.signal_receiver.on_signal__signal_data);
+            assert_eq!(None, mock.signal_receiver.on_signal_error__params);
+        }
+    }
+
+    #[test]
+    fn test_on_get_command_should_return_corrupted_data_error_on_starting_not_0() {
+        let mut mock = MockReceiverFromSlaveController::create([1, 2, 3].to_vec());
 
         let mut request_controller = MockRequestsControllerRx::new(Ok(()));
 
         let result = mock.on_get_command(&mut request_controller);
+
+        assert_eq!(true, mock.rx.on_rx_transfer_interrupt_called);
+        assert_eq!(Err(Errors::CommandDataCorrupted), result);
+        assert_eq!(Err(Errors::CommandDataCorrupted), mock.rx.receiver_result.unwrap());
+        assert_eq!(false, request_controller.process_response_called);
+        assert_eq!(None, mock.signal_receiver.on_signal__signal_data);
+        assert_eq!(None, mock.signal_receiver.on_signal_error__params);
     }
 
-    /*
+    #[test]
+    fn test_on_get_command_should_renurn_not_recognized_on_unknown() {
+        let unknown_operations = [Operation::Unknown as u8, Operation::None as u8, Operation::Set as u8, Operation::Read as u8, Operation::Command as u8, 8, 9, 11, 56];
 
-    fn on_get_command(&mut self, request_controller: &mut RCR) -> Result<(), Errors> {
-        let (rx, sr, signal_pargser) = self.slice();
-        rx.on_rx_transfer_interrupt(|data| {
-            if data.len() > 3 && data[0] == Operation::None as u8 {
-                let operation_code = data[1];
-                let instruction_code = data[2];
-                let data = &data[3..];
-                if operation_code == Operation::Signal as u8 {
-                    let instruction = if instruction_code == Signals::MonitoringStateChanged as u8 {
-                        Some(Signals::MonitoringStateChanged)
-                    } else  if instruction_code == Signals::StateFixTry as u8 {
-                        Some(Signals::StateFixTry)
-                    } else  if instruction_code == Signals::ControlStateChanged as u8 {
-                        Some(Signals::ControlStateChanged)
-                    } else  if instruction_code == Signals::RelayStateChanged as u8 {
-                        Some(Signals::RelayStateChanged)
-                    } else  if instruction_code == Signals::GetTimeStamp as u8 {
-                        Some(Signals::GetTimeStamp)
-                    } else {
-                        None
-                    };
-                    match instruction {
-                        Some(instruction) => {
-                            match signal_pargser.parse(instruction, data) {
-                                Ok(signal_data) => {
-                                    sr.on_signal(signal_data);
-                                    Ok(())
-                                }
-                                Err(error) => {
-                                    sr.on_signal_error(Some(instruction), error, false);
-                                    Err(Errors::DataCorrupted)
-                                }
-                            }
-                        }
-                        None => {
-                            sr.on_signal_error(None, ErrorCode::EInstructionUnrecognized, false);
-                            Err(Errors::InstructionNotRecognized(instruction_code))
-                        }
-                    }
-                } else if operation_code == Operation::Success as u8 || operation_code == Operation::Response as u8 || operation_code == Operation::Error as u8 {
-                    request_controller.process_response(operation_code, instruction_code, data)
-                } else if operation_code == Operation::Response as u8 {
-                    Ok(())
-                } else {
-                    Err(Errors::OperationNotRecognized(operation_code))
+        for operation_code in unknown_operations {
+            let mut mock = MockReceiverFromSlaveController::create(
+                [Operation::None as u8, operation_code, 0].to_vec());
+
+            let mut request_controller = MockRequestsControllerRx::new(Ok(()));
+
+            let result = mock.on_get_command(&mut request_controller);
+
+            assert_eq!(true, mock.rx.on_rx_transfer_interrupt_called);
+            assert_eq!(Err(Errors::OperationNotRecognized(operation_code)), result);
+            assert_eq!(Err(Errors::OperationNotRecognized(operation_code)), mock.rx.receiver_result.unwrap());
+            assert_eq!(false, request_controller.process_response_called);
+            assert_eq!(None, mock.signal_receiver.on_signal__signal_data);
+            assert_eq!(None, mock.signal_receiver.on_signal_error__params);
+        }
+    }
+
+    #[test]
+    fn test_on_get_command_should_call_request_controller_on_response_operations() {
+        let response_operations = [Operation::Response as u8, Operation::Success as u8, Operation::Error as u8];
+
+        for operation_code in response_operations {
+            for instruction_code in 0..100 {
+                let mut mock = MockReceiverFromSlaveController::create(
+                    [Operation::None as u8, operation_code, instruction_code].to_vec());
+
+                let mut request_controller = MockRequestsControllerRx::new(Ok(()));
+
+                let result = mock.on_get_command(&mut request_controller);
+
+                assert_eq!(true, mock.rx.on_rx_transfer_interrupt_called);
+                assert_eq!(true, request_controller.process_response_called);
+                assert_eq!(request_controller.process_response_result, mock.rx.receiver_result.unwrap());
+                assert_eq!(request_controller.process_response_result, result);
+                assert_eq!(None, mock.signal_receiver.on_signal__signal_data);
+                assert_eq!(None, mock.signal_receiver.on_signal_error__params);
+
+                let request_controller_result_errors = [Errors::NoRequestsFound, Errors::DataCorrupted,
+                    Errors::InstructionNotRecognized(0), Errors::OperationNotRecognized(0)];
+
+                for request_controller_result_error in request_controller_result_errors {
+                    let mut request_controller =
+                        MockRequestsControllerRx::new(Err(request_controller_result_error));
+
+                    let result = mock.on_get_command(&mut request_controller);
+
+                    assert_eq!(true, mock.rx.on_rx_transfer_interrupt_called);
+                    assert_eq!(true, request_controller.process_response_called);
+                    assert_eq!(request_controller.process_response_result, mock.rx.receiver_result.unwrap());
+                    assert_eq!(request_controller.process_response_result, result);
+                    assert_eq!(None, mock.signal_receiver.on_signal__signal_data);
+                    assert_eq!(None, mock.signal_receiver.on_signal_error__params);
                 }
-            } else {
-                Err(Errors::NotEnoughDataGot)
             }
-        })
+        }
     }
-    */
+
+    #[test]
+    fn test_on_get_command_should_return_error_on_wrong_signal() {
+        let operation_code = Operation::Signal as u8;
+        let correct_signals = [Signals::GetTimeStamp as u8, Signals::MonitoringStateChanged as u8,
+            Signals::StateFixTry as u8, Signals::ControlStateChanged as u8, Signals::RelayStateChanged as u8];
+
+        for instruction_code in 0..50 {
+            if !correct_signals.contains(&instruction_code) {
+
+                let mut mock = MockReceiverFromSlaveController::create([
+                    Operation::None as u8, operation_code, instruction_code].to_vec());
+
+                let mut request_controller = MockRequestsControllerRx::new(Ok(()));
+
+                let result = mock.on_get_command(&mut request_controller);
+
+                assert_eq!(true, mock.rx.on_rx_transfer_interrupt_called);
+                assert_eq!(false, request_controller.process_response_called);
+                assert_eq!(Err(Errors::InstructionNotRecognized(instruction_code)), mock.rx.receiver_result.unwrap());
+                assert_eq!(Err(Errors::InstructionNotRecognized(instruction_code)), result);
+                assert_eq!(None, mock.signal_receiver.on_signal__signal_data);
+                assert_eq!(Some((None, ErrorCode::EInstructionUnrecognized, false)), mock.signal_receiver.on_signal_error__params);
+            }
+        }
+    }
+
+    #[test]
+    fn test_on_get_command_should_return_error_on_parse_error_for_correct_signals() {
+        let operation_code = Operation::Signal as u8;
+        let correct_signals = [Signals::GetTimeStamp, Signals::MonitoringStateChanged,
+            Signals::StateFixTry, Signals::ControlStateChanged, Signals::RelayStateChanged];
+
+        let parse_error_codes = [ErrorCode::ERequestDataNoValue, ErrorCode::EInstructionUnrecognized, ErrorCode::ECommandEmpty,
+            ErrorCode::ECommandSizeOverflow, ErrorCode::EInstructionWrongStart,
+            ErrorCode::EWriteMaxAttemptsExceeded, ErrorCode::EUndefinedOperation,
+            ErrorCode::ERelayCountOverflow, ErrorCode::ERelayCountAndDataMismatch,
+            ErrorCode::ERelayIndexOutOfRange, ErrorCode::ESwitchCountMaxValueOverflow,
+            ErrorCode::EControlInterruptedPinNotAllowedValue, ErrorCode::ERelayNotAllowedPinUsed,
+            ErrorCode::EUndefinedCode(0), ErrorCode::EUndefinedCode(1), ErrorCode::EUndefinedCode(2),
+            ErrorCode::EUndefinedCode(3), ErrorCode::EUndefinedCode(127), ErrorCode::EUndefinedCode(255)];
+
+        for instruction_code in correct_signals {
+            let mut mock = MockReceiverFromSlaveController::create([
+                Operation::None as u8, operation_code, instruction_code as u8].to_vec());
+
+            let mut request_controller = MockRequestsControllerRx::new(Ok(()));
+
+            for parse_error_code in parse_error_codes {
+                mock.signals_parser.parse_result = Err(parse_error_code);
+
+                let result = mock.on_get_command(&mut request_controller);
+
+                assert_eq!(true, mock.rx.on_rx_transfer_interrupt_called);
+                assert_eq!(false, request_controller.process_response_called);
+                assert_eq!(Err(Errors::DataCorrupted), mock.rx.receiver_result.unwrap());
+                assert_eq!(Err(Errors::DataCorrupted), result);
+                assert_eq!(None, mock.signal_receiver.on_signal__signal_data);
+                assert_eq!(Some((Some(instruction_code), parse_error_code, false)), mock.signal_receiver.on_signal_error__params);
+            }
+        }
+    }
+
+    #[test]
+    fn test_on_get_command_should_proxy_parses_correct_signals() {
+        let operation_code = Operation::Signal as u8;
+        let correct_signals = [Signals::GetTimeStamp, Signals::MonitoringStateChanged,
+            Signals::StateFixTry, Signals::ControlStateChanged, Signals::RelayStateChanged];
+
+        let parsed_datas = [None, Some(RelaySignalData{
+            relative_timestamp: RelativeSeconds::new(0x12345678_u32),
+            relay_idx: 1,
+            is_on: false,
+            is_called_internally: Some(false),
+        }),
+        Some(RelaySignalData{
+            relative_timestamp: RelativeSeconds::new(2547852),
+            relay_idx: 12,
+            is_on: true,
+            is_called_internally: None,
+        }), ];
+
+        for instruction_code in correct_signals {
+            let mut mock = MockReceiverFromSlaveController::create([
+                Operation::None as u8, operation_code, instruction_code as u8].to_vec());
+
+            let mut request_controller = MockRequestsControllerRx::new(Ok(()));
+
+            for relay_signal_data in parsed_datas {
+                mock.signals_parser.parse_result = Ok(SignalData{
+                    instruction: instruction_code,
+                    relay_signal_data: None});
+
+                let result = mock.on_get_command(&mut request_controller);
+
+                assert_eq!(true, mock.rx.on_rx_transfer_interrupt_called);
+                assert_eq!(false, request_controller.process_response_called);
+                assert_eq!(Ok(()), mock.rx.receiver_result.unwrap());
+                assert_eq!(Ok(()), result);
+                assert_eq!(Some(mock.signals_parser.parse_result.unwrap()), mock.signal_receiver.on_signal__signal_data);
+                assert_eq!(None, mock.signal_receiver.on_signal_error__params);
+            }
+        }
+    }
 
     struct MockTransmitterToSlaveController {
         start_transfer_called: bool,
@@ -891,23 +1029,34 @@ mod tests {
 
     }
 
-    struct MockReceiver<const size: usize> {
-        data: [u8; size],
+    struct MockReceiver {
+        data: Vec<u8>,
+        on_rx_transfer_interrupt_called: bool,
+        receiver_result: Option<Result<(), Errors>>,
     }
 
-    impl <const size: usize> Receiver for MockReceiver<size> {
+    impl MockReceiver {
+        pub fn new(data: Vec<u8>) -> Self {
+            Self {
+                data,
+                on_rx_transfer_interrupt_called: false,
+                receiver_result: None,
+            }
+        }
+    }
+
+    impl Receiver for MockReceiver {
         fn on_rx_transfer_interrupt<F: FnOnce(&[u8]) -> Result<(), Errors>> (&mut self, receiver: F) -> Result<(), Errors> {
-            receiver(&self.data)
+            self.on_rx_transfer_interrupt_called = true;
+            let res = receiver(&self.data.as_slice());
+            self.receiver_result = Some(res);
+            res
         }
     }
 
     struct MockSignalReceiver {
         on_signal__signal_data: Option<SignalData>,
-        on_signal_error__params: Option<(Option<Signals>, ErrorCode)>,
-        on_request_success__params__checker: Box<dyn FnMut(&SentRequest) -> ()>,
-        on_request_error__params__checker: Box<dyn FnMut(&SentRequest, ErrorCode) -> ()>,
-        on_request_parse_error__params__checker: Box<dyn FnMut(&SentRequest, Errors, &[u8]) -> ()>,
-        on_request_response__params__checker: Box<dyn FnMut(&SentRequest, DataInstructions) -> ()>,
+        on_signal_error__params: Option<(Option<Signals>, ErrorCode, bool)>,
     }
 
     impl SignalsReceiver for MockSignalReceiver {
@@ -915,11 +1064,29 @@ mod tests {
             self.on_signal__signal_data = Some(signal_data);
         }
         fn on_signal_error(&mut self, instruction: Option<Signals>, error_code: ErrorCode, sent: bool) {
-            self.on_signal_error__params = Some((instruction, error_code));
+            self.on_signal_error__params = Some((instruction, error_code, sent));
         }
     }
 
-    impl ResponseHandler for MockSignalReceiver {
+    struct MockRequestHandler {
+        on_request_success__params__checker: Box<dyn FnMut(&SentRequest) -> ()>,
+        on_request_error__params__checker: Box<dyn FnMut(&SentRequest, ErrorCode) -> ()>,
+        on_request_parse_error__params__checker: Box<dyn FnMut(&SentRequest, Errors, &[u8]) -> ()>,
+        on_request_response__params__checker: Box<dyn FnMut(&SentRequest, DataInstructions) -> ()>,
+    }
+
+    impl MockRequestHandler {
+        fn new() -> Self {
+            Self {
+                on_request_success__params__checker: Box::new(|_| {}),
+                on_request_error__params__checker: Box::new(|_, _| {}),
+                on_request_parse_error__params__checker: Box::new(|_, _, _| {}),
+                on_request_response__params__checker: Box::new(|_, _| {}),
+            }
+        }
+    }
+
+    impl ResponseHandler for MockRequestHandler {
         fn on_request_success(&mut self, request: &SentRequest) {
             (self.on_request_success__params__checker)(request);
         }
@@ -936,25 +1103,22 @@ mod tests {
     }
 
 
-    struct MockReceiverFromSlaveController<const size: usize> {
-        rx: MockReceiver<size>,
+    struct MockReceiverFromSlaveController {
+        rx: MockReceiver,
         signal_receiver: MockSignalReceiver,
         signals_parser: MockSignalsParser,
     }
 
 
-    impl <const size: usize> MockReceiverFromSlaveController<size> {
-        pub fn create(data: [u8; size]) -> Self {
+    impl MockReceiverFromSlaveController {
+        pub fn create(data: Vec<u8>) -> Self {
             let signal_receiver = MockSignalReceiver {
                 on_signal__signal_data: None,
                 on_signal_error__params: None,
-                on_request_success__params__checker: Box::new(|_| {}),
-                on_request_error__params__checker: Box::new(|_, _| {}),
-                on_request_parse_error__params__checker: Box::new(|_, _, _| {}),
-                on_request_response__params__checker: Box::new(|_, _| {}),
             };
-            let rx = MockReceiver {data};
-            let signals_data = SignalData{
+            let rx = MockReceiver::new(data);
+
+            let signals_data = SignalData {
                 instruction: Signals::GetTimeStamp,
                 relay_signal_data: None,
             };
@@ -1011,12 +1175,11 @@ mod tests {
     }
 
 
-    impl <const size: usize>
-    ReceiverFromSlaveControllerAbstract<MockSignalReceiver, MockReceiver<size>, MockRequestsControllerRx, MockSignalsParser>
-    for MockReceiverFromSlaveController<size>
+    impl ReceiverFromSlaveControllerAbstract<MockSignalReceiver, MockReceiver, MockRequestsControllerRx, MockSignalsParser>
+    for MockReceiverFromSlaveController
     {
         #[inline(always)]
-        fn slice(&mut self) -> (&mut MockReceiver<size>, &mut MockSignalReceiver, &MockSignalsParser) {
+        fn slice(&mut self) -> (&mut MockReceiver, &mut MockSignalReceiver, &MockSignalsParser) {
             let MockReceiverFromSlaveController { rx, signal_receiver, signals_parser } = self;
             (rx, signal_receiver, signals_parser)
         }
