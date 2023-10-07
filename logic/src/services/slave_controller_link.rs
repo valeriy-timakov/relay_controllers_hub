@@ -46,7 +46,7 @@ impl SentRequest {
 
 pub trait SignalsReceiver {
     fn on_signal(&mut self, signal_data: SignalData);
-    fn on_signal_error(&mut self, instruction: Option<Signals>, error_code: ErrorCode, sent_to_slave_success: bool);
+    fn on_signal_error(&mut self, instruction_code: u8, error_code: ErrorCode, sent_to_slave_success: bool);
 }
 
 pub trait ResponseHandler {
@@ -208,14 +208,9 @@ impl  <'a, SH, TS, S, TxBuff, RC> SignalsReceiver for SignalsHandlerProxy<'a, SH
         }
     }
 
-    fn on_signal_error(&mut self, instruction: Option<Signals>, error_code: ErrorCode, _: bool) {
-        let sent_to_slave_success =
-            if instruction.is_some() {
-                self.tx.send_error(instruction.unwrap() as u8, error_code).is_ok()
-            } else {
-                false
-            };
-        self.proxy.on_signal_error(instruction, error_code, sent_to_slave_success);
+    fn on_signal_error(&mut self, instruction_code: u8, error_code: ErrorCode, _: bool) {
+        let sent_to_slave_success = self.tx.send_error(instruction_code, error_code).is_ok();
+        self.proxy.on_signal_error(instruction_code, error_code, sent_to_slave_success);
     }
 
 }
@@ -394,14 +389,14 @@ trait ReceiverFromSlaveControllerAbstract<SR, Rc, RCR, SP>
                                         Ok(())
                                     }
                                     Err(error) => {
-                                        sr.on_signal_error(Some(instruction), error, false);
-                                        Err(Errors::DataCorrupted)
+                                        sr.on_signal_error(instruction_code, error, false);
+                                        Ok(())
                                     }
                                 }
                             }
                             None => {
-                                sr.on_signal_error(None, ErrorCode::EInstructionUnrecognized, false);
-                                Err(Errors::InstructionNotRecognized(instruction_code))
+                                sr.on_signal_error(instruction_code, ErrorCode::EInstructionUnrecognized, false);
+                                Ok(())
                             }
                         }
                     } else if operation_code == Operation::Success as u8 || operation_code == Operation::Response as u8 || operation_code == Operation::Error as u8 {
@@ -738,10 +733,10 @@ mod tests {
 
                 assert_eq!(true, mock.rx.on_rx_transfer_interrupt_called);
                 assert_eq!(false, request_controller.process_response_called);
-                assert_eq!(Err(Errors::InstructionNotRecognized(instruction_code)), mock.rx.receiver_result.unwrap());
-                assert_eq!(Err(Errors::InstructionNotRecognized(instruction_code)), result);
+                assert_eq!(Ok(()), mock.rx.receiver_result.unwrap());
+                assert_eq!(Ok(()), result);
                 assert_eq!(None, mock.signal_receiver.on_signal__signal_data);
-                assert_eq!(Some((None, ErrorCode::EInstructionUnrecognized, false)), mock.signal_receiver.on_signal_error__params);
+                assert_eq!(Some((instruction_code, ErrorCode::EInstructionUnrecognized, false)), mock.signal_receiver.on_signal_error__params);
             }
         }
     }
@@ -774,10 +769,10 @@ mod tests {
 
                 assert_eq!(true, mock.rx.on_rx_transfer_interrupt_called);
                 assert_eq!(false, request_controller.process_response_called);
-                assert_eq!(Err(Errors::DataCorrupted), mock.rx.receiver_result.unwrap());
-                assert_eq!(Err(Errors::DataCorrupted), result);
+                assert_eq!(Ok(()), mock.rx.receiver_result.unwrap());
+                assert_eq!(Ok(()), result);
                 assert_eq!(None, mock.signal_receiver.on_signal__signal_data);
-                assert_eq!(Some((Some(instruction_code), parse_error_code, false)), mock.signal_receiver.on_signal_error__params);
+                assert_eq!(Some((instruction_code as u8, parse_error_code, false)), mock.signal_receiver.on_signal_error__params);
             }
         }
     }
@@ -1056,15 +1051,15 @@ mod tests {
 
     struct MockSignalReceiver {
         on_signal__signal_data: Option<SignalData>,
-        on_signal_error__params: Option<(Option<Signals>, ErrorCode, bool)>,
+        on_signal_error__params: Option<(u8, ErrorCode, bool)>,
     }
 
     impl SignalsReceiver for MockSignalReceiver {
         fn on_signal(&mut self, signal_data: SignalData) {
             self.on_signal__signal_data = Some(signal_data);
         }
-        fn on_signal_error(&mut self, instruction: Option<Signals>, error_code: ErrorCode, sent: bool) {
-            self.on_signal_error__params = Some((instruction, error_code, sent));
+        fn on_signal_error(&mut self, instruction_code: u8, error_code: ErrorCode, sent: bool) {
+            self.on_signal_error__params = Some((instruction_code, error_code, sent));
         }
     }
 

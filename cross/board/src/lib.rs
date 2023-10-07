@@ -48,7 +48,7 @@ impl SignalsReceiver for SignalReceiverImp {
         todo!()
     }
 
-    fn on_signal_error(&mut self, _: Option<Signals>, _: ErrorCode) {
+    fn on_signal_error(&mut self, _: u8, _: ErrorCode) {
         todo!()
     }
 
