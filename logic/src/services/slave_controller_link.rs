@@ -28,6 +28,7 @@ pub struct RelaySignalData {
 const MAX_REQUESTS_COUNT: usize = 4;
 
 
+#[derive(PartialEq, Debug)]
 pub struct SentRequest {
     operation: Operation,
     instruction: DataInstructionCodes,
@@ -44,9 +45,9 @@ impl SentRequest {
     }
 }
 
-pub trait SignalsReceiver {
+pub trait SignalsHandler {
     fn on_signal(&mut self, signal_data: SignalData);
-    fn on_signal_error(&mut self, instruction_code: u8, error_code: ErrorCode, sent_to_slave_success: bool);
+    fn on_signal_error(&mut self, instruction: Signals, error: Errors, sent_to_slave_success: bool);
 }
 
 pub trait ResponseHandler {
@@ -157,60 +158,60 @@ impl <RH: ResponseHandler, RP: RequestsParser> RequestsControllerRx for Requests
 
 }
 
-struct SignalsHandlerProxy<'a, SH, TS, S, TxBuff, RC>
-    where
-        SH: SignalsReceiver,
-        TS: Fn() -> RelativeMillis,
-        TxBuff: ReadBuffer + BufferWriter,
-        S: TransmitterToSlaveControllerAbstract<TxBuff, RC>,
-        RC: RequestsControllerTx + RequestsControllerRx,
-{
-    proxy: SH,
-    time_source: TS,
-    tx:  &'a mut S,
-    request_controller: &'a mut RC,
-    phantom: core::marker::PhantomData<TxBuff>,
+trait ControlledRequestSender {
+    fn send(&mut self, operation: Operation, instruction: DataInstructions, timestamp: RelativeMillis) -> Result<(), Errors>;
 }
 
-impl <'a, SH, TS, S, TxBuff, RC> SignalsHandlerProxy<'a, SH, TS, S, TxBuff, RC>
+struct SignalsHandlerProxy<'a, SH, TS, S>
     where
-        SH: SignalsReceiver,
+        SH: SignalsHandler,
         TS: Fn() -> RelativeMillis,
-        TxBuff: ReadBuffer + BufferWriter,
-        S: TransmitterToSlaveControllerAbstract<TxBuff, RC>,
-        RC: RequestsControllerTx + RequestsControllerRx,
+        S: ControlledRequestSender + ErrorsSender,
 {
-    fn new(proxy: SH, time_source: TS, tx:  &'a mut S, request_controller: &'a mut RC) -> Self {
+    handler: SH,
+    time_source: TS,
+    tx:  &'a mut S,
+}
+
+impl <'a, SH, TS, S> SignalsHandlerProxy<'a, SH, TS, S>
+    where
+        SH: SignalsHandler,
+        TS: Fn() -> RelativeMillis,
+        S: ControlledRequestSender + ErrorsSender,
+{
+    fn new(handler: SH, time_source: TS, tx:  &'a mut S) -> Self {
         Self {
-            proxy, time_source, tx, request_controller, phantom: core::marker::PhantomData
+            handler, time_source, tx
         }
     }
 }
 
-impl  <'a, SH, TS, S, TxBuff, RC> SignalsReceiver for SignalsHandlerProxy<'a, SH, TS, S, TxBuff, RC>
+impl  <'a, SH, TS, S> SignalsHandler for SignalsHandlerProxy<'a, SH, TS, S>
     where
-        SH: SignalsReceiver,
+        SH: SignalsHandler,
         TS: Fn() -> RelativeMillis,
-        TxBuff: ReadBuffer + BufferWriter,
-        S: TransmitterToSlaveControllerAbstract<TxBuff, RC>,
-        RC: RequestsControllerTx + RequestsControllerRx,
+        S: ControlledRequestSender + ErrorsSender,
 {
 
     fn on_signal(&mut self, signal_data: SignalData) {
         if signal_data.instruction == Signals::GetTimeStamp {
             let timestamp = (self.time_source)();
-            let _ = self.tx.send_request(Operation::Set,
-                            DataInstructions::RemoteTimestamp(Conversation::Data(timestamp.seconds())),
-                            timestamp,
-                                 self.request_controller);
+            let res = self.tx.send(
+                Operation::Set,
+                DataInstructions::RemoteTimestamp(Conversation::Data(timestamp.seconds())),
+                timestamp);
+            if res.is_err() {
+                self.handler.on_signal_error(signal_data.instruction, res.err().unwrap(), false);
+            }
         } else {
-            self.proxy.on_signal(signal_data);
+            self.handler.on_signal(signal_data);
         }
     }
 
-    fn on_signal_error(&mut self, instruction_code: u8, error_code: ErrorCode, _: bool) {
-        let sent_to_slave_success = self.tx.send_error(instruction_code, error_code).is_ok();
-        self.proxy.on_signal_error(instruction_code, error_code, sent_to_slave_success);
+    fn on_signal_error(&mut self, instruction: Signals, error: Errors, _: bool) {
+        let error_code = ErrorCode::for_error(error);
+        let sent_to_slave_success = self.tx.send_error(instruction as u8, error_code).is_ok();
+        self.handler.on_signal_error(instruction, error, sent_to_slave_success);
     }
 
 }
@@ -221,10 +222,10 @@ pub struct SlaveControllerLink<T, R, TxBuff, RxBuff, SH, RH>
         RxBuff: WriteBuffer + ReadableBuffer,
         T: TxTransferProxy<TxBuff>,
         R: RxTransferProxy<RxBuff>,
-        SH: SignalsReceiver,
+        SH: SignalsHandler,
         RH: ResponseHandler,
 {
-    tx: TransmitterToSlaveController<T, TxBuff>,
+    tx: TransmitterToSlaveController<TxBuff, TxTransfer<T, TxBuff>>,
     rx: ReceiverFromSlaveController<R, RxBuff, SH, SignalsParserImpl>,
     requests_controller: RequestsController<RH, RequestsParserImpl>,
 }
@@ -236,7 +237,7 @@ impl <T, R, TxBuff, RxBuff, SH, RH> SlaveControllerLink<T, R,TxBuff, RxBuff, SH,
         RxBuff: WriteBuffer + ReadableBuffer,
         T: TxTransferProxy<TxBuff>,
         R: RxTransferProxy<RxBuff>,
-        SH: SignalsReceiver,
+        SH: SignalsHandler,
         RH: ResponseHandler,
 {
     pub fn create(serial_transfer: SerialTransfer<T, R, TxBuff, RxBuff>, signal_receiver: SH, response_handler: RH) -> Result<Self, Errors> {
@@ -265,17 +266,91 @@ impl <T, R, TxBuff, RxBuff, SH, RH> SlaveControllerLink<T, R,TxBuff, RxBuff, SH,
 
     #[inline(always)]
     pub fn on_tx_dma_interrupts(&mut self) {
-        self.tx.on_dma_interrupts();
+        self.tx.tx.on_dma_interrupts();
     }
 }
 
-trait TransmitterToSlaveControllerAbstract<TxBuff, RCT> : Sender<TxBuff>
+trait RequestsSender<RCT, I>
+    where
+        RCT: RequestsControllerTx,
+        I: DataInstruction,
+{
+    fn send_request(&mut self, operation: Operation, instruction: I, timestamp: RelativeMillis, request_controller: &mut RCT) -> Result<(), Errors>;
+}
+
+trait ErrorsSender {
+    fn send_error(&mut self, instruction_code: u8, error_code: ErrorCode) -> Result<(), Errors>;
+}
+
+struct TransmitterToSlaveController<TxBuff, S>
+    where
+        TxBuff: ReadBuffer + BufferWriter,
+        S: Sender<TxBuff>,
+{
+    tx: S,
+    _phantom: core::marker::PhantomData<TxBuff>,
+}
+
+impl <TxBuff, S> TransmitterToSlaveController<TxBuff, S>
+    where
+        TxBuff: ReadBuffer + BufferWriter,
+        S: Sender<TxBuff>,
+{
+    pub fn new (tx: S) -> Self {
+        Self {
+            tx,
+            _phantom: core::marker::PhantomData
+        }
+    }
+
+
+}
+
+struct FakeControllerTx;
+
+impl RequestsControllerTx for FakeControllerTx {
+    fn add_sent_request(&mut self, _request: SentRequest) {}
+
+    fn check_request(&self, _instruction_code: DataInstructionCodes) -> Result<(), Errors> {
+        Ok(())
+    }
+}
+
+impl <TxBuff, S> Sender<TxBuff> for TransmitterToSlaveController<TxBuff, S>
+    where
+        TxBuff: ReadBuffer + BufferWriter,
+        S: Sender<TxBuff>,
+{
+    #[inline(always)]
+    fn start_transfer<F: FnOnce(&mut TxBuff) -> Result<(), Errors>>(&mut self, writter: F) -> Result<(), Errors> {
+        self.tx.start_transfer(writter)
+    }
+}
+
+impl <TxBuff, S> ErrorsSender for TransmitterToSlaveController<TxBuff, S>
+    where
+        TxBuff: ReadBuffer + BufferWriter,
+        S: Sender<TxBuff>,
+{
+    fn send_error(&mut self, instruction_code: u8, error_code: ErrorCode) -> Result<(), Errors> {
+        self.start_transfer(|buffer| {
+            buffer.clear();
+            buffer.add_u8(Operation::None as u8)?;
+            buffer.add_u8(Operation::Error as u8)?;
+            buffer.add_u8(instruction_code)?;
+            buffer.add_u8(error_code.discriminant())
+        })
+    }
+}
+
+impl <TxBuff, RCT, S, I> RequestsSender<RCT, I> for TransmitterToSlaveController<TxBuff, S>
     where
         TxBuff: ReadBuffer + BufferWriter,
         RCT: RequestsControllerTx,
+        S: Sender<TxBuff>,
+        I: DataInstruction,
 {
-
-    fn send_request<I: DataInstruction>(&mut self, operation: Operation, instruction: I, timestamp: RelativeMillis, request_controller: &mut RCT) -> Result<(), Errors> {
+    fn send_request(&mut self, operation: Operation, instruction: I, timestamp: RelativeMillis, request_controller: &mut RCT) -> Result<(), Errors> {
 
         request_controller.check_request(instruction.code())?;
 
@@ -293,65 +368,11 @@ trait TransmitterToSlaveControllerAbstract<TxBuff, RCT> : Sender<TxBuff>
 
         result
     }
-
-    fn send_error(&mut self, instruction_code: u8, error_code: ErrorCode) -> Result<(), Errors> {
-        self.start_transfer(|buffer| {
-            buffer.clear();
-            buffer.add_u8(Operation::None as u8)?;
-            buffer.add_u8(Operation::Error as u8)?;
-            buffer.add_u8(instruction_code)?;
-            buffer.add_u8(error_code.discriminant())
-        })
-    }
-
 }
-
-struct TransmitterToSlaveController<T, TxBuff>
-    where
-        TxBuff: ReadBuffer + BufferWriter,
-        T: TxTransferProxy<TxBuff>,
-{
-    tx: TxTransfer<T, TxBuff>
-}
-
-impl <T, TxBuff> TransmitterToSlaveController<T, TxBuff>
-    where
-        TxBuff: ReadBuffer + BufferWriter,
-        T: TxTransferProxy<TxBuff>,
-{
-    pub fn new (tx: TxTransfer<T, TxBuff>) -> Self {
-        Self {
-            tx,
-        }
-    }
-
-    #[inline(always)]
-    fn on_dma_interrupts(&mut self) {
-        self.tx.on_dma_interrupts();
-    }
-
-}
-
-impl <T, TxBuff> Sender<TxBuff> for TransmitterToSlaveController<T, TxBuff>
-    where
-        TxBuff: ReadBuffer + BufferWriter,
-        T: TxTransferProxy<TxBuff>,
-{
-    fn start_transfer<F: FnOnce(&mut TxBuff) -> Result<(), Errors>>(&mut self, writter: F) -> Result<(), Errors> {
-        self.tx.start_transfer(writter)
-    }
-}
-
-impl <T, TxBuff, RCT> TransmitterToSlaveControllerAbstract<TxBuff, RCT> for TransmitterToSlaveController<T, TxBuff>
-    where
-        TxBuff: ReadBuffer + BufferWriter,
-        T: TxTransferProxy<TxBuff>,
-        RCT: RequestsControllerTx,
-{}
 
 trait ReceiverFromSlaveControllerAbstract<SR, Rc, RCR, SP>
     where
-        SR: SignalsReceiver,
+        SR: SignalsHandler,
         Rc: Receiver,
         RCR: RequestsControllerRx,
         SP: SignalsParser,
@@ -389,13 +410,13 @@ trait ReceiverFromSlaveControllerAbstract<SR, Rc, RCR, SP>
                                         Ok(())
                                     }
                                     Err(error) => {
-                                        sr.on_signal_error(instruction_code, error, false);
+                                        sr.on_signal_error(instruction, error, false);
                                         Ok(())
                                     }
                                 }
                             }
                             None => {
-                                sr.on_signal_error(instruction_code, ErrorCode::EInstructionUnrecognized, false);
+                                sr.on_signal_error(Signals::Unknown, Errors::InstructionNotRecognized(instruction_code), false);
                                 Ok(())
                             }
                         }
@@ -418,7 +439,7 @@ struct ReceiverFromSlaveController<R, RxBuff, SR, SP>
     where
         RxBuff: WriteBuffer + ReadableBuffer,
         R: RxTransferProxy<RxBuff>,
-        SR: SignalsReceiver,
+        SR: SignalsHandler,
         SP: SignalsParser,
 {
     rx: RxTransfer<R, RxBuff>,
@@ -430,7 +451,7 @@ impl <R, RxBuff, SR, SP> ReceiverFromSlaveController<R, RxBuff, SR, SP>
     where
         RxBuff: WriteBuffer + ReadableBuffer,
         R: RxTransferProxy<RxBuff>,
-        SR: SignalsReceiver,
+        SR: SignalsHandler,
         SP: SignalsParser,
 {
     pub fn new(rx: RxTransfer<R, RxBuff>, signal_receiver: SR, signal_parser: SP) -> Self {
@@ -447,7 +468,7 @@ impl <R, RxBuff, SR, RCR, SP> ReceiverFromSlaveControllerAbstract<SR, RxTransfer
     where
         RxBuff: WriteBuffer + ReadableBuffer,
         R: RxTransferProxy<RxBuff>,
-        SR: SignalsReceiver,
+        SR: SignalsHandler,
         RCR: RequestsControllerRx,
         SP: SignalsParser,
 {
@@ -464,6 +485,7 @@ mod tests {
     use alloc::boxed::Box;
     use alloc::vec::Vec;
     use core::cell::RefCell;
+    use core::ops::Deref;
     use super::*;
     use std::rc::Rc;
     use quickcheck_macros::quickcheck;
@@ -477,19 +499,20 @@ mod tests {
         let sending_error: ErrorCode = ErrorCode::EInstructionUnrecognized;
         let instruction_code = Signals::MonitoringStateChanged as u8;
 
-        let mut mock =
-            MockTransmitterToSlaveController::new(true, start_transfer_result);
+        let mock = Rc::new(RefCell::new(MockSender::new(true, start_transfer_result)));
 
-        let result = mock.send_error(instruction_code, sending_error);
+        let mut tested = TransmitterToSlaveController::new(mock.clone());
 
-        assert_eq!(true, mock.start_transfer_called);
+        let result = tested.send_error(instruction_code, sending_error);
+
+        assert_eq!(true, mock.borrow().start_transfer_called);
         assert_eq!(start_transfer_result, result);
-        assert_eq!(true, mock.buffer.cleared);
-        assert_eq!(4, mock.buffer.add_ua_arguments.len());
-        assert_eq!(Operation::None as u8, mock.buffer.add_ua_arguments[0]);
-        assert_eq!(Operation::Error as u8, mock.buffer.add_ua_arguments[1]);
-        assert_eq!(instruction_code, mock.buffer.add_ua_arguments[2]);
-        assert_eq!(sending_error.discriminant(), mock.buffer.add_ua_arguments[3]);
+        assert_eq!(true, mock.borrow().buffer.cleared);
+        assert_eq!(4, mock.borrow().buffer.add_ua_arguments.len());
+        assert_eq!(Operation::None as u8, mock.borrow().buffer.add_ua_arguments[0]);
+        assert_eq!(Operation::Error as u8, mock.borrow().buffer.add_ua_arguments[1]);
+        assert_eq!(instruction_code, mock.borrow().buffer.add_ua_arguments[2]);
+        assert_eq!(sending_error.discriminant(), mock.borrow().buffer.add_ua_arguments[3]);
     }
 
     #[test]
@@ -517,15 +540,16 @@ mod tests {
             ErrorCode::EUndefinedCode(127),
             ErrorCode::EUndefinedCode(255),
         ];
-        let mut mock =
-            MockTransmitterToSlaveController::new(true, start_transfer_result);
+        let mock = Rc::new(RefCell::new(MockSender::new(true, start_transfer_result)));
+
+        let mut tested = TransmitterToSlaveController::new(mock.clone());
 
         for instruction_code in 0 .. 100 {
             for sending_error in sending_errors {
-                mock.send_error(instruction_code, sending_error).unwrap();
-                assert_eq!(4, mock.buffer.add_ua_arguments.len());
-                assert_eq!(instruction_code, mock.buffer.add_ua_arguments[2]);
-                assert_eq!(sending_error.discriminant(), mock.buffer.add_ua_arguments[3]);
+                tested.send_error(instruction_code, sending_error).unwrap();
+                assert_eq!(4, mock.borrow().buffer.add_ua_arguments.len());
+                assert_eq!(instruction_code, mock.borrow().buffer.add_ua_arguments[2]);
+                assert_eq!(sending_error.discriminant(), mock.borrow().buffer.add_ua_arguments[3]);
             }
         }
     }
@@ -539,12 +563,12 @@ mod tests {
         let instruction_code = instruction.code();
         let timestamp = RelativeMillis::new(0x12345678_u32);
 
-        let mut mock =
-            MockTransmitterToSlaveController::new(true, start_transfer_result);
+        let mock = Rc::new(RefCell::new(MockSender::new(true, start_transfer_result)));
+        let mut tested = TransmitterToSlaveController::new(mock.clone());
 
         let mut mock_request_controller = MockRequestsControllerTx::new(Ok(()));
 
-        let result = mock.send_request(operation, instruction.clone(), timestamp, &mut mock_request_controller);
+        let result = tested.send_request(operation, instruction.clone(), timestamp, &mut mock_request_controller);
 
         assert_eq!(true, *mock_request_controller.check_request_result_called.borrow());
         assert_eq!(start_transfer_result, result);
@@ -555,11 +579,11 @@ mod tests {
         assert_eq!(timestamp, mock_request_controller.add_sent_request_parameter.as_ref().unwrap().rel_timestamp);
         assert_eq!(instruction_code, mock_request_controller.add_sent_request_parameter.as_ref().unwrap().instruction);
         //check buffer operations
-        assert_eq!(true, mock.buffer.cleared);
-        assert!(3 <= mock.buffer.add_ua_arguments.len());
-        assert_eq!(Operation::None as u8, mock.buffer.add_ua_arguments[0]);
-        assert_eq!(operation as u8, mock.buffer.add_ua_arguments[1]);
-        assert_eq!(instruction_code as u8, mock.buffer.add_ua_arguments[2]);
+        assert_eq!(true, mock.borrow().buffer.cleared);
+        assert!(3 <= mock.borrow().buffer.add_ua_arguments.len());
+        assert_eq!(Operation::None as u8, mock.borrow().buffer.add_ua_arguments[0]);
+        assert_eq!(operation as u8, mock.borrow().buffer.add_ua_arguments[1]);
+        assert_eq!(instruction_code as u8, mock.borrow().buffer.add_ua_arguments[2]);
         assert_eq!(true, *instruction.serialize_called.borrow());
     }
 
@@ -569,8 +593,8 @@ mod tests {
         let operation = Operation::Set;
         let timestamp = RelativeMillis::new(0x12345678_u32);
 
-        let mut mock =
-            MockTransmitterToSlaveController::new(true, start_transfer_result);
+        let mock = Rc::new(RefCell::new(MockSender::new(true, start_transfer_result)));
+        let mut tested = TransmitterToSlaveController::new(mock.clone());
 
         let errors = [
             Errors::RequestsLimitReached,
@@ -583,7 +607,7 @@ mod tests {
             let instruction = DataInstructions::Id(Conversation::Data(0x12345678_u32));
             *mock_request_controller.check_request_result_called.borrow_mut() = false;
             mock_request_controller.check_request_result = Err(error);
-            let result = mock.send_request(operation, instruction, timestamp, &mut mock_request_controller);
+            let result = tested.send_request(operation, instruction, timestamp, &mut mock_request_controller);
             assert_eq!(true, *mock_request_controller.check_request_result_called.borrow());
             assert_eq!(false, mock_request_controller.add_sent_request_called);
             assert_eq!(Err(error), result);
@@ -596,8 +620,8 @@ mod tests {
         let operation = Operation::Set;
         let timestamp = RelativeMillis::new(0x12345678_u32);
 
-        let mut mock =
-            MockTransmitterToSlaveController::new(true, start_transfer_result);
+        let mock = Rc::new(RefCell::new(MockSender::new(true, start_transfer_result)));
+        let mut tested = TransmitterToSlaveController::new(mock.clone());
 
         let errors = [
             Errors::TransferInProgress,
@@ -610,8 +634,8 @@ mod tests {
         let mut mock_request_controller = MockRequestsControllerTx::new(Ok(()));
         for error in errors {
             let instruction = DataInstructions::Id(Conversation::Data(0x12345678_u32));
-            mock.start_transfer_result = Err(error);
-            let result = mock.send_request(operation, instruction, timestamp, &mut mock_request_controller);
+            mock.borrow_mut().start_transfer_result = Err(error);
+            let result = tested.send_request(operation, instruction, timestamp, &mut mock_request_controller);
             assert_eq!(false, mock_request_controller.add_sent_request_called);
             assert_eq!(Err(error), result);
         }
@@ -736,7 +760,7 @@ mod tests {
                 assert_eq!(Ok(()), mock.rx.receiver_result.unwrap());
                 assert_eq!(Ok(()), result);
                 assert_eq!(None, mock.signal_receiver.on_signal__signal_data);
-                assert_eq!(Some((instruction_code, ErrorCode::EInstructionUnrecognized, false)), mock.signal_receiver.on_signal_error__params);
+                assert_eq!(Some((Signals::Unknown, Errors::InstructionNotRecognized(instruction_code), false)), mock.signal_receiver.on_signal_error__params);
             }
         }
     }
@@ -747,14 +771,9 @@ mod tests {
         let correct_signals = [Signals::GetTimeStamp, Signals::MonitoringStateChanged,
             Signals::StateFixTry, Signals::ControlStateChanged, Signals::RelayStateChanged];
 
-        let parse_error_codes = [ErrorCode::ERequestDataNoValue, ErrorCode::EInstructionUnrecognized, ErrorCode::ECommandEmpty,
-            ErrorCode::ECommandSizeOverflow, ErrorCode::EInstructionWrongStart,
-            ErrorCode::EWriteMaxAttemptsExceeded, ErrorCode::EUndefinedOperation,
-            ErrorCode::ERelayCountOverflow, ErrorCode::ERelayCountAndDataMismatch,
-            ErrorCode::ERelayIndexOutOfRange, ErrorCode::ESwitchCountMaxValueOverflow,
-            ErrorCode::EControlInterruptedPinNotAllowedValue, ErrorCode::ERelayNotAllowedPinUsed,
-            ErrorCode::EUndefinedCode(0), ErrorCode::EUndefinedCode(1), ErrorCode::EUndefinedCode(2),
-            ErrorCode::EUndefinedCode(3), ErrorCode::EUndefinedCode(127), ErrorCode::EUndefinedCode(255)];
+        let parse_errors = [Errors::InstructionNotRecognized(19), Errors::DataCorrupted,
+            Errors::InvalidDataSize, Errors::NoRequestsFound, Errors::NotEnoughDataGot, Errors::OutOfRange,
+            Errors::OperationNotRecognized(0), Errors::OperationNotRecognized(1)];
 
         for instruction_code in correct_signals {
             let mut mock = MockReceiverFromSlaveController::create([
@@ -762,8 +781,8 @@ mod tests {
 
             let mut request_controller = MockRequestsControllerRx::new(Ok(()));
 
-            for parse_error_code in parse_error_codes {
-                mock.signals_parser.parse_result = Err(parse_error_code);
+            for parse_error in parse_errors {
+                mock.signals_parser.parse_result = Err(parse_error);
 
                 let result = mock.on_get_command(&mut request_controller);
 
@@ -772,7 +791,7 @@ mod tests {
                 assert_eq!(Ok(()), mock.rx.receiver_result.unwrap());
                 assert_eq!(Ok(()), result);
                 assert_eq!(None, mock.signal_receiver.on_signal__signal_data);
-                assert_eq!(Some((instruction_code as u8, parse_error_code, false)), mock.signal_receiver.on_signal_error__params);
+                assert_eq!(Some((instruction_code, parse_error, false)), mock.signal_receiver.on_signal_error__params);
             }
         }
     }
@@ -819,14 +838,221 @@ mod tests {
         }
     }
 
-    struct MockTransmitterToSlaveController {
+    #[test]
+    fn test_signals_proxy_sends_timestamp() {
+
+        let mock_signals_handler = Rc::new(RefCell::new(MockSignalsHandler::new()));
+        let time_source_called = RefCell::new(false);
+        let mut rng = rand::thread_rng();
+        let timestamp = RelativeMillis::new(rng.gen_range(1..u32::MAX));
+        let mock_time_source = || {
+            *time_source_called.borrow_mut() = true;
+            timestamp
+        };
+        let mock_request_controller = Rc::new(RefCell::new(MockRequestsControllerTx::new(Ok(()))));
+        let mut mock_tx = MockControlledSender::new(Ok(()), Ok(()));
+
+        let mut proxy = SignalsHandlerProxy::new(
+            mock_signals_handler.clone(),
+            mock_time_source,
+            &mut mock_tx
+        );
+
+        let data = SignalData {
+            instruction: Signals::GetTimeStamp,
+            relay_signal_data: None,
+        };
+
+        proxy.on_signal(data);
+
+        assert_eq!(true, *time_source_called.borrow());
+        assert_eq!(true, mock_tx.send_called);
+        assert_eq!(
+            Some((
+                Operation::Set,
+                DataInstructions::RemoteTimestamp(Conversation::Data(timestamp.seconds())),
+                timestamp)),
+            mock_tx.send_params);
+        assert_eq!(true, *time_source_called.borrow());
+        assert_eq!(None, mock_signals_handler.borrow().on_signal__signal_data);
+        assert_eq!(None, mock_signals_handler.borrow().on_signal_error__params);
+
+    }
+
+    #[test]
+    fn test_signals_proxy_proxies_send_timestamp_errors_to_handler() {
+
+        let mock_signals_handler = Rc::new(RefCell::new(MockSignalsHandler::new()));
+        let time_source_called = RefCell::new(false);
+        let mut rng = rand::thread_rng();
+        let timestamp = RelativeMillis::new(rng.gen_range(1..u32::MAX));
+        let mock_time_source = || {
+            *time_source_called.borrow_mut() = true;
+            timestamp
+        };
+        let mock_request_controller = Rc::new(RefCell::new(MockRequestsControllerTx::new(Ok(()))));
+
+        let data = SignalData {
+            instruction: Signals::GetTimeStamp,
+            relay_signal_data: None,
+        };
+
+        let errors = [Errors::OutOfRange, Errors::NoBufferAvailable, Errors::DmaError(DMAError::Overrun(())),
+            Errors::DmaError(DMAError::NotReady(())), Errors::DmaError(DMAError::SmallBuffer(())),
+            Errors::NotEnoughDataGot, Errors::InvalidDataSize, Errors::DmaBufferOverflow];
+
+        for error in errors {
+            let mut mock_tx = MockControlledSender::new(Err(error), Ok(()));
+
+            let mut proxy = SignalsHandlerProxy::new(
+                mock_signals_handler.clone(),
+                mock_time_source,
+                &mut mock_tx
+            );
+
+            proxy.on_signal(data);
+
+            assert_eq!(true, *time_source_called.borrow());
+            assert_eq!(true, mock_tx.send_called);
+            assert_eq!(
+                Some((
+                    Operation::Set,
+                    DataInstructions::RemoteTimestamp(Conversation::Data(timestamp.seconds())),
+                    timestamp)),
+                mock_tx.send_params);
+            assert_eq!(true, *time_source_called.borrow());
+            assert_eq!(None, mock_signals_handler.borrow().on_signal__signal_data);
+            assert_eq!(Some((Signals::GetTimeStamp, error, false)), mock_signals_handler.borrow().on_signal_error__params);
+        }
+
+    }
+
+    #[test]
+    fn test_signals_proxy_proxies_other_signals_to_handler() {
+
+        let mock_signals_handler = Rc::new(RefCell::new(MockSignalsHandler::new()));
+        let time_source_called = RefCell::new(false);
+        let mut rng = rand::thread_rng();
+        let timestamp = RelativeMillis::new(rng.gen_range(1..u32::MAX));
+        let mock_time_source = || {
+            *time_source_called.borrow_mut() = true;
+            timestamp
+        };
+        let mut mock_request_controller = Rc::new(RefCell::new(MockRequestsControllerTx::new(Ok(()))));
+        let mut mock_tx = MockControlledSender::new(Ok(()), Ok(()));
+
+
+        let datas = [
+            SignalData {
+                instruction: Signals::ControlStateChanged,
+                relay_signal_data: None,
+            },
+            SignalData {
+                instruction: Signals::MonitoringStateChanged,
+                relay_signal_data: Some(RelaySignalData{
+                    relative_timestamp: RelativeSeconds::new(123485_u32),
+                    relay_idx: 10,
+                    is_on: false,
+                    is_called_internally: Some(true),
+                }),
+            }
+        ];
+
+        for data in datas {
+
+            let mut proxy = SignalsHandlerProxy::new(
+                mock_signals_handler.clone(),
+                mock_time_source,
+                &mut mock_tx
+            );
+            proxy.on_signal(data);
+
+            assert_eq!(false, *time_source_called.borrow());
+            assert_eq!(false, mock_tx.send_called);
+            assert_eq!(None, mock_tx.send_params);
+            assert_eq!(false, *time_source_called.borrow());
+            assert_eq!(Some(data), mock_signals_handler.borrow().on_signal__signal_data);
+            assert_eq!(None, mock_signals_handler.borrow().on_signal_error__params);
+        }
+    }
+
+    struct MockRequestSender<I, F>
+        where
+            I: DataInstruction,
+            F: FnMut(Operation, I, RelativeMillis, &mut MockRequestsControllerTx) -> Result<(), Errors>,
+    {
+        on_send_request: F,
+        send_error_called: bool,
+        senderror_params: Option<(u8, ErrorCode)>,
+        send_error_result: Result<(), Errors>,
+        _phantom: core::marker::PhantomData<I>,
+    }
+
+    impl <I, F> MockRequestSender<I, F>
+        where
+            I: DataInstruction,
+            F: FnMut(Operation, I, RelativeMillis, &mut MockRequestsControllerTx) -> Result<(), Errors>,
+    {
+        pub fn new (on_send_request: F, send_error_result: Result<(), Errors>) -> Self {
+            Self {
+                on_send_request,
+                send_error_called: false,
+                senderror_params: None,
+                send_error_result,
+                _phantom: core::marker::PhantomData,
+            }
+        }
+    }
+
+    impl <I, F> Sender<MockTxBuffer> for MockRequestSender<I, F>
+        where
+            I: DataInstruction,
+            F: FnMut(Operation, I, RelativeMillis, &mut MockRequestsControllerTx) -> Result<(), Errors>,
+    {
+        fn start_transfer<W: FnOnce(&mut MockTxBuffer) -> Result<(), Errors>>(&mut self, writter: W) -> Result<(), Errors> {
+            //should never be called
+            Err(Errors::OutOfRange)
+        }
+    }
+
+    impl <I, F> Sender<MockTxBuffer> for Rc<MockRequestSender<I, F>>
+        where
+            I: DataInstruction,
+            F: FnMut(Operation, I, RelativeMillis, &mut MockRequestsControllerTx) -> Result<(), Errors>,
+    {
+        fn start_transfer<W: FnOnce(&mut MockTxBuffer) -> Result<(), Errors>>(&mut self, writter: W) -> Result<(), Errors> {
+            //should never be called
+            Err(Errors::OutOfRange)
+        }
+    }
+
+    impl ErrorsSender for MockRequestSender<MockIntruction, fn(Operation, MockIntruction, RelativeMillis, &mut MockRequestsControllerTx) -> Result<(), Errors>> {
+        fn send_error(&mut self, instruction_code: u8, error_code: ErrorCode) -> Result<(), Errors> {
+            self.send_error_called = true;
+            self.senderror_params = Some((instruction_code, error_code));
+            self.send_error_result
+        }
+    }
+
+    impl <I, F> RequestsSender<MockRequestsControllerTx, I> for MockRequestSender<I, F>
+        where
+            I: DataInstruction,
+            F: FnMut(Operation, I, RelativeMillis, &mut MockRequestsControllerTx) -> Result<(), Errors>,
+    {
+
+        fn send_request(&mut self, operation: Operation, instruction: I, timestamp: RelativeMillis, request_controller: &mut MockRequestsControllerTx) -> Result<(), Errors> {
+            (self.on_send_request)(operation, instruction, timestamp, request_controller)
+        }
+    }
+
+    struct MockSender {
         start_transfer_called: bool,
         call_writer: bool,
         start_transfer_result: Result<(), Errors>,
         buffer: MockTxBuffer,
     }
 
-    impl MockTransmitterToSlaveController {
+    impl MockSender {
         pub fn new (call_writer: bool, start_transfer_result: Result<(), Errors>) -> Self {
             let buffer = MockTxBuffer::new();
             Self {
@@ -839,7 +1065,7 @@ mod tests {
 
     }
 
-    impl Sender<MockTxBuffer> for MockTransmitterToSlaveController {
+    impl Sender<MockTxBuffer> for MockSender {
         fn start_transfer<F: FnOnce(&mut MockTxBuffer) -> Result<(), Errors>>(&mut self, writter: F) -> Result<(), Errors> {
             self.start_transfer_called = true;
             if self.call_writer {
@@ -849,6 +1075,13 @@ mod tests {
         }
     }
 
+    impl Sender<MockTxBuffer> for Rc<RefCell<MockSender>> {
+        fn start_transfer<F: FnOnce(&mut MockTxBuffer) -> Result<(), Errors>>(&mut self, writter: F) -> Result<(), Errors> {
+            self.borrow_mut().start_transfer(writter)
+        }
+    }
+
+    #[derive(PartialEq, Debug)]
     struct MockRequestsControllerTx {
         check_request_result: Result<(), Errors>,
         check_request_result_called: RefCell<bool>,
@@ -919,8 +1152,6 @@ mod tests {
             self.process_response_result
         }
     }
-
-    impl TransmitterToSlaveControllerAbstract<MockTxBuffer, MockRequestsControllerTx> for MockTransmitterToSlaveController {}
 
     const BUFFER_SIZE: usize = 20;
 
@@ -1000,7 +1231,7 @@ mod tests {
             }
         }
     }
-/*
+
     impl DataInstruction for MockIntruction {
         fn code(&self) -> DataInstructionCodes {
             self.code
@@ -1011,7 +1242,7 @@ mod tests {
             self.serialize_result
         }
     }
-*/
+
     impl DataInstruction for Rc<MockIntruction> {
         fn code(&self) -> DataInstructionCodes {
             self.code
@@ -1049,17 +1280,35 @@ mod tests {
         }
     }
 
-    struct MockSignalReceiver {
+    struct MockSignalsHandler {
         on_signal__signal_data: Option<SignalData>,
-        on_signal_error__params: Option<(u8, ErrorCode, bool)>,
+        on_signal_error__params: Option<(Signals, Errors, bool)>,
     }
 
-    impl SignalsReceiver for MockSignalReceiver {
+    impl MockSignalsHandler {
+        fn new() -> Self {
+            Self {
+                on_signal__signal_data: None,
+                on_signal_error__params: None,
+            }
+        }
+    }
+
+    impl SignalsHandler for Rc<RefCell<MockSignalsHandler>> {
+        fn on_signal(&mut self, signal_data: SignalData) {
+            self.borrow_mut().on_signal(signal_data);
+        }
+        fn on_signal_error(&mut self, instruction: Signals, error: Errors, sent: bool) {
+            self.borrow_mut().on_signal_error(instruction, error, sent);
+        }
+    }
+
+    impl SignalsHandler for MockSignalsHandler {
         fn on_signal(&mut self, signal_data: SignalData) {
             self.on_signal__signal_data = Some(signal_data);
         }
-        fn on_signal_error(&mut self, instruction_code: u8, error_code: ErrorCode, sent: bool) {
-            self.on_signal_error__params = Some((instruction_code, error_code, sent));
+        fn on_signal_error(&mut self, instruction: Signals, error: Errors, sent: bool) {
+            self.on_signal_error__params = Some((instruction, error, sent));
         }
     }
 
@@ -1100,14 +1349,14 @@ mod tests {
 
     struct MockReceiverFromSlaveController {
         rx: MockReceiver,
-        signal_receiver: MockSignalReceiver,
+        signal_receiver: MockSignalsHandler,
         signals_parser: MockSignalsParser,
     }
 
 
     impl MockReceiverFromSlaveController {
         pub fn create(data: Vec<u8>) -> Self {
-            let signal_receiver = MockSignalReceiver {
+            let signal_receiver = MockSignalsHandler {
                 on_signal__signal_data: None,
                 on_signal_error__params: None,
             };
@@ -1145,12 +1394,12 @@ mod tests {
     }
 
     struct MockSignalsParser {
-        parse_result: Result<SignalData, ErrorCode>,
+        parse_result: Result<SignalData, Errors>,
         test_data: RefCell<MockSignalsParserTestData>,
     }
 
     impl MockSignalsParser {
-        pub fn new(parse_result: Result<SignalData, ErrorCode>) -> Self {
+        pub fn new(parse_result: Result<SignalData, Errors>) -> Self {
             let test_data = RefCell::new(MockSignalsParserTestData::new());
             Self {
                 parse_result,
@@ -1160,7 +1409,7 @@ mod tests {
     }
 
     impl SignalsParser for MockSignalsParser {
-        fn parse(&self, instruction: Signals, data: &[u8]) -> Result<SignalData, ErrorCode> {
+        fn parse(&self, instruction: Signals, data: &[u8]) -> Result<SignalData, Errors> {
             let mut test_data = self.test_data.borrow_mut();
             test_data.parse_called = true;
             test_data.parse_instruction = Some(instruction);
@@ -1170,16 +1419,53 @@ mod tests {
     }
 
 
-    impl ReceiverFromSlaveControllerAbstract<MockSignalReceiver, MockReceiver, MockRequestsControllerRx, MockSignalsParser>
+    impl ReceiverFromSlaveControllerAbstract<MockSignalsHandler, MockReceiver, MockRequestsControllerRx, MockSignalsParser>
     for MockReceiverFromSlaveController
     {
         #[inline(always)]
-        fn slice(&mut self) -> (&mut MockReceiver, &mut MockSignalReceiver, &MockSignalsParser) {
+        fn slice(&mut self) -> (&mut MockReceiver, &mut MockSignalsHandler, &MockSignalsParser) {
             let MockReceiverFromSlaveController { rx, signal_receiver, signals_parser } = self;
             (rx, signal_receiver, signals_parser)
         }
     }
 
+    struct MockControlledSender {
+        send_called: bool,
+        send_params: Option<(Operation, DataInstructions, RelativeMillis)>,
+        send_result: Result<(), Errors>,
+        send_error_called: bool,
+        send_error_params: Option<(u8, ErrorCode)>,
+        send_error_result: Result<(), Errors>,
+    }
+
+    impl MockControlledSender {
+        pub fn new(send_result: Result<(), Errors>, send_error_result: Result<(), Errors>) -> Self {
+            Self {
+                send_called: false,
+                send_params: None,
+                send_result,
+                send_error_called: false,
+                send_error_params: None,
+                send_error_result,
+            }
+        }
+    }
+
+    impl ErrorsSender for MockControlledSender {
+        fn send_error(&mut self, instruction_code: u8, error_code: ErrorCode) -> Result<(), Errors> {
+            self.send_error_called = true;
+            self.send_error_params = Some((instruction_code, error_code));
+            self.send_error_result
+        }
+    }
+
+    impl ControlledRequestSender for MockControlledSender {
+        fn send(&mut self, operation: Operation, instruction: DataInstructions, timestamp: RelativeMillis) -> Result<(), Errors> {
+            self.send_called = true;
+            self.send_params = Some((operation, instruction, timestamp));
+            self.send_result
+        }
+    }
 
 
 

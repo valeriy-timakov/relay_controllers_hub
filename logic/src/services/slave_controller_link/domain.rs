@@ -121,6 +121,7 @@ pub trait DataInstruction {
 }
 
 #[repr(u8)]
+#[derive(PartialEq, Debug)]
 pub enum DataInstructions {
     Settings(Conversation<EmptyRequest, RelaysSettings>) = DataInstructionCodes::Settings as u8,
     State(Conversation<EmptyRequest, State>) = DataInstructionCodes::State as u8,
@@ -444,6 +445,7 @@ pub enum ErrorCode {
     ERelayIndexOutOfRange = 0x0a,
     ESwitchCountMaxValueOverflow = 0x0b,
     EControlInterruptedPinNotAllowedValue = 0x0c,
+    EInternalError = 0x0d,
     ERelayNotAllowedPinUsed = 0b00100000,
     EUndefinedCode(u8) = 128
 }
@@ -483,8 +485,17 @@ impl ErrorCode {
             ErrorCode::EUndefinedCode(code)
         }
     }
+
+    pub fn for_error(error: Errors) -> Self {
+        match error {
+            Errors::InstructionNotRecognized(code) => { ErrorCode::EUndefinedCode(code) }
+            Errors::InvalidDataSize => { ErrorCode::ERequestDataNoValue }
+            _ => { ErrorCode::EInternalError }
+        }
+    }
 }
 
+#[derive(PartialEq, Debug)]
 pub enum Conversation<RQ: Request, D: Data + 'static> {
     Request(RQ),
     Data(D),
@@ -510,15 +521,18 @@ pub trait Data {
 
 }
 
+#[derive(PartialEq, Debug)]
 pub enum Response {
     Success,
     Error(ErrorCode),
 }
 
+#[derive(PartialEq, Debug)]
 pub struct EmptyRequest;
 
 impl Request for EmptyRequest {}
 
+#[derive(PartialEq, Debug)]
 pub struct RelayIndexRequest {
     pub index: u8,
 }
@@ -581,8 +595,13 @@ impl Extractor for u64 {
 }
 
 
+#[derive(PartialEq, Debug)]
 pub struct RelativeMillis16(u16);
+
+#[derive(PartialEq, Debug)]
 pub struct RelativeSeconds8(u8);
+
+#[derive(PartialEq, Debug)]
 pub struct RelativeSeconds16(u16);
 
 impl Extractor for RelativeMillis16 {
@@ -712,6 +731,7 @@ impl Data for u32 {
 
 }
 
+#[derive(PartialEq, Debug)]
 pub struct AllData {
     pub id: u32,
     pub interrupt_pin: u8,
@@ -776,6 +796,7 @@ impl Data for AllData {
 
 }
 
+#[derive(PartialEq, Debug)]
 pub struct SwitchCountingSettings {
     pub switch_limit_interval: RelativeSeconds16,
     pub max_switch_count: u8,
@@ -821,6 +842,7 @@ impl Data for SwitchCountingSettings {
 
 }
 
+#[derive(PartialEq, Debug)]
 pub struct StateSwitchDatas {
     pub data: [StateSwitchData; SWITCHES_DATA_BUFFER_SIZE],
     pub count: usize,
@@ -891,7 +913,7 @@ impl Data for StateSwitchDatas {
 
 }
 
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, PartialEq, Debug)]
 pub struct StateSwitchData {
     state: BitsU8,
     time_stamp: RelativeSeconds
@@ -915,6 +937,7 @@ impl StateSwitchData {
 
 }
 
+#[derive(PartialEq, Debug)]
 pub struct ContactsWaitData {
     relays_count: usize,
     contacts_wait_start_timestamps: [RelativeSeconds; MAX_RELAYS_COUNT],
@@ -981,6 +1004,7 @@ impl Data for ContactsWaitData {
 
 }
 
+#[derive(PartialEq, Debug)]
 pub struct FixDataContainer {
     fix_data: [FixData; MAX_RELAYS_COUNT],
     fix_data_count: usize,
@@ -1073,7 +1097,7 @@ impl Data for FixDataContainer {
 
 }
 
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, PartialEq, Debug)]
 pub struct FixData {
     fix_try_count: u8,
     fix_last_try_time: RelativeSeconds
@@ -1097,6 +1121,7 @@ impl FixData {
 
 }
 
+#[derive(PartialEq, Debug)]
 pub struct CyclesStatistics {
     min_cycle_duration: RelativeMillis16,
     max_cycle_duration: RelativeMillis16,
@@ -1154,6 +1179,7 @@ impl Data for CyclesStatistics {
 
 }
 
+#[derive(PartialEq, Debug)]
 pub struct StateFixSettings {
     switch_try_duration: RelativeMillis16,
     switch_try_count: u8,
@@ -1193,6 +1219,7 @@ impl Data for StateFixSettings {
 
 }
 
+#[derive(PartialEq, Debug)]
 pub struct State {
     data: BitsU64,
     count: u8,
@@ -1248,6 +1275,7 @@ impl Data for State {
 
 }
 
+#[derive(PartialEq, Debug)]
 pub struct RelaySingleState {
     data: BitsU8,
 }
@@ -1289,6 +1317,7 @@ impl Data for RelaySingleState {
 
 }
 
+#[derive(PartialEq, Debug)]
 pub struct RelayState {
     data: BitsU8,
 }
@@ -1366,7 +1395,7 @@ impl Data for RelayState {
 
 }
 
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, PartialEq, Debug)]
 pub struct PinData {
     data: u8,
 }
@@ -1380,7 +1409,7 @@ impl PinData {
     }
 }
 
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, PartialEq, Debug)]
 pub struct RelaySettings {
     control_pin: PinData,
     monitor_pin: PinData,
@@ -1413,6 +1442,7 @@ impl RelaySettings {
 
 }
 
+#[derive(PartialEq, Debug)]
 pub struct RelaysSettings {
     relays: [RelaySettings; MAX_RELAYS_COUNT],
     relays_count: usize,

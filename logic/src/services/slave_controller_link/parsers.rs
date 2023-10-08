@@ -154,7 +154,7 @@ impl RequestsParser for RequestsParserImpl {
 }
 
 pub trait SignalsParser {
-    fn parse(&self, instruction: Signals, data: &[u8]) -> Result<SignalData, ErrorCode>;
+    fn parse(&self, instruction: Signals, data: &[u8]) -> Result<SignalData, Errors>;
 }
 
 pub struct SignalsParserImpl;
@@ -166,13 +166,13 @@ impl SignalsParserImpl {
 }
 
 impl SignalsParser for SignalsParserImpl {
-    fn parse(&self, instruction: Signals, data: &[u8]) -> Result<SignalData, ErrorCode> {
+    fn parse(&self, instruction: Signals, data: &[u8]) -> Result<SignalData, Errors> {
         let relay_signal_data =
             if instruction == Signals::GetTimeStamp {
                 None
             } else {
                 if data.len() < 5 {
-                    return Err(ErrorCode::ERequestDataNoValue);
+                    return Err(Errors::InvalidDataSize);
                 }
                 let relay_idx = data[0] & 0x0f_u8;
                 let is_on = data[0] & 0x10 > 0;

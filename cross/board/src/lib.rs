@@ -1,7 +1,7 @@
 #![no_std]
 
 
-use logic::services::slave_controller_link::{ SentRequest, SignalData, SignalsReceiver};
+use logic::services::slave_controller_link::{SentRequest, SignalData, SignalsHandler};
 use logic::services::slave_controller_link::domain::{DataInstructions, ErrorCode, Signals};
 use logic::errors::Errors;
 
@@ -43,12 +43,12 @@ pub type ControllerLinkSlave6 = SlaveControllerLink<USART6, Stream6<DMA2>, 5, St
 
 pub struct SignalReceiverImp();
 
-impl SignalsReceiver for SignalReceiverImp {
+impl SignalsHandler for SignalReceiverImp {
     fn on_signal(&mut self, _: SignalData) {
         todo!()
     }
 
-    fn on_signal_error(&mut self, _: u8, _: ErrorCode) {
+    fn on_signal_error(&mut self, _: Signals, _: ErrorCode) {
         todo!()
     }
 

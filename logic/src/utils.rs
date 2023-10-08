@@ -10,7 +10,7 @@ pub struct Empty;
 
 pub const EMPTY: Empty = Empty;
 
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, PartialEq, Debug)]
 pub struct BitsU8 {
     pub bits: u8,
 }
@@ -67,6 +67,7 @@ impl BitsU8 {
 
 }
 
+#[derive(PartialEq, Debug)]
 pub struct BitsU64 {
     pub bits: u64,
 }
