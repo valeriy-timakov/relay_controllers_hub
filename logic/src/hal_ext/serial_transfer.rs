@@ -151,7 +151,7 @@ impl <R, BUF> Receiver for RxTransfer<R, BUF>
             self.rx_transfer.clear_idle_interrupt();
             let bytes_count = self.rx_transfer.get_read_bytes_count();
             let new_buffer = self.back_buffer.take().unwrap();
-            let res: Result<(), Errors> = match self.rx_transfer.next_transfer(new_buffer) {
+            match self.rx_transfer.next_transfer(new_buffer) {
                 Ok(buffer) => {
                     let result = receiver(buffer.slice_to(bytes_count));
                     self.return_buffer(buffer);
@@ -162,10 +162,10 @@ impl <R, BUF> Receiver for RxTransfer<R, BUF>
                     self.return_buffer(buffer);
                     Err(Errors::DmaError(err))
                 }
-            };
-            return res;
+            }
+        } else {
+            Err(Errors::TransferInProgress)
         }
-        Err(Errors::TransferInProgress)
     }
 
 }

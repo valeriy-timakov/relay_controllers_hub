@@ -109,12 +109,9 @@ mod app {
     fn usart6(mut ctx: usart6::Context) {
         let usart6::SharedResources { mut controller_link_slave6, mut in_work } = ctx.shared;
 
-        match controller_link_slave6.on_get_command(|| {
+        controller_link_slave6.on_get_command(/*|| {
             in_work.lock(|in_work: &mut InWork| { in_work.rtc.get_relative_timestamp() })
-        }) {
-            Ok(_) => { hprintln!("rx interrupt handled!"); }
-            Err(_) => { hprintln!("Wrong UART1 on idle interrupt: no buffer!"); }
-        };
+        }*/);
     }
 
     #[task(binds = DMA2_STREAM2, priority=1, shared = [in_work])]

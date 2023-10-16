@@ -12,7 +12,7 @@ pub const SWITCHES_DATA_BUFFER_SIZE: usize = 50;
 
 #[repr(u8)]
 #[derive(Copy, Clone, PartialEq, Debug)]
-pub enum Operation {
+pub enum OperationCodes {
     None = 0x00,
     Read = 0x01,
     Set = 0x02,
@@ -21,7 +21,27 @@ pub enum Operation {
     Signal = 0x05,
     Response = 0x06,
     Command = 0x07,
+    SuccessV2 = 0x08,
+    ErrorV2 = 0x09,
+    ResponseV2 = 0x0a,
     Unknown = 0x0f
+}
+
+#[derive(Copy, Clone, PartialEq, Debug)]
+pub enum Operation {
+    Read,
+    Set,
+    Success,
+    Error,
+    Signal,
+    Response,
+    Command,
+}
+
+#[derive(Copy, Clone, PartialEq, Debug)]
+pub enum Version {
+    V1,
+    V2,
 }
 
 #[repr(u8)]

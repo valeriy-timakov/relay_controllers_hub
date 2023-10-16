@@ -113,9 +113,12 @@ fn cache_getter(code: DataInstructionCodes) -> Option< &'static Box<dyn CashedIn
     }
 }
 
-pub trait RequestsParser {
+pub trait ResponsesParser {
     fn parse_response(&self, instruction_code: u8, data: &[u8]) -> Result<DataInstructions, Errors>;
     fn request_needs_cache(&self, instruction: DataInstructionCodes) -> bool;
+    fn parse_u32(&self, data: &[u8]) -> Result<u32, Errors> {
+        u32::parse(data)
+    }
 }
 
 pub struct RequestsParserImpl {
@@ -130,7 +133,7 @@ impl RequestsParserImpl {
     }
 }
 
-impl RequestsParser for RequestsParserImpl {
+impl ResponsesParser for RequestsParserImpl {
     
     fn parse_response(&self, instruction_code: u8, data: &[u8]) -> Result<DataInstructions, Errors> {
         let instruction = DataInstructionCodes::get(instruction_code)?;
@@ -155,6 +158,7 @@ impl RequestsParser for RequestsParserImpl {
 
 pub trait SignalsParser {
     fn parse(&self, instruction: Signals, data: &[u8]) -> Result<SignalData, Errors>;
+    fn parse_instruction(&self, instruction_code: u8) -> Option<Signals>;
 }
 
 pub struct SignalsParserImpl;
@@ -166,7 +170,25 @@ impl SignalsParserImpl {
 }
 
 impl SignalsParser for SignalsParserImpl {
+
+    fn parse_instruction(&self, instruction_code: u8) -> Option<Signals> {
+        if instruction_code == Signals::MonitoringStateChanged as u8 {
+            Some(Signals::MonitoringStateChanged)
+        } else if instruction_code == Signals::StateFixTry as u8 {
+            Some(Signals::StateFixTry)
+        } else if instruction_code == Signals::ControlStateChanged as u8 {
+            Some(Signals::ControlStateChanged)
+        } else if instruction_code == Signals::RelayStateChanged as u8 {
+            Some(Signals::RelayStateChanged)
+        } else if instruction_code == Signals::GetTimeStamp as u8 {
+            Some(Signals::GetTimeStamp)
+        } else {
+            None
+        }
+    }
+
     fn parse(&self, instruction: Signals, data: &[u8]) -> Result<SignalData, Errors> {
+
         let relay_signal_data =
             if instruction == Signals::GetTimeStamp {
                 None
@@ -200,4 +222,39 @@ impl SignalsParser for SignalsParserImpl {
     }
 }
 
+
+/*
+
+
+    #[test]
+    fn test_on_get_command_should_return_error_on_parse_error_for_correct_signals() {
+        let operation_code = OperationCodes::Signal as u8;
+        let correct_signals = [Signals::GetTimeStamp, Signals::MonitoringStateChanged,
+            Signals::StateFixTry, Signals::ControlStateChanged, Signals::RelayStateChanged];
+
+        let parse_errors = [Errors::InstructionNotRecognized(19), Errors::DataCorrupted,
+            Errors::InvalidDataSize, Errors::NoRequestsFound, Errors::NotEnoughDataGot, Errors::OutOfRange,
+            Errors::OperationNotRecognized(0), Errors::OperationNotRecognized(1)];
+
+        for instruction_code in correct_signals {
+            let mut controller = MockReceiverFromSlaveController::create([
+                OperationCodes::None as u8, operation_code, instruction_code as u8].to_vec());
+
+            let mut request_controller = MockRequestsControllerRx::new(Ok(()));
+
+            for parse_error in parse_errors {
+                controller.signals_parser.parse_result = Err(parse_error);
+
+                let result = controller.on_get_command(&mut request_controller);
+
+                assert_eq!(true, controller.rx.on_rx_transfer_interrupt_called);
+                assert_eq!(false, request_controller.process_response_called);
+                assert_eq!(Ok(()), controller.rx.receiver_result.unwrap());
+                assert_eq!(Ok(()), result);
+                assert_eq!(None, controller.signal_receiver.on_signal__signal_data);
+                assert_eq!(Some((instruction_code, parse_error, false)), controller.signal_receiver.on_signal_error__params);
+            }
+        }
+    }
+ */
 
