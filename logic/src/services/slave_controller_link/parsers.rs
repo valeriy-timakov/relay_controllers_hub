@@ -2,8 +2,8 @@ use alloc::boxed::Box;
 use core::mem::size_of;
 use crate::errors::Errors;
 use crate::hal_ext::rtc_wrapper::RelativeSeconds;
-use crate::services::slave_controller_link::domain::{AllData, ContactsWaitData, Conversation, Data, DataInstructionCodes, DataInstructions, ErrorCode, FixDataContainer, RelaysSettings, Request, Signals, StateSwitchDatas};
-use crate::services::slave_controller_link::{RelaySignalData, SignalData};
+use crate::services::slave_controller_link::domain::{AllData, ContactsWaitData, Conversation, Data, DataInstructionCodes, DataInstructions, Extractor, FixDataContainer, Operation, OperationCodes, RelaysSettings, Request, Signals, StateSwitchDatas, Version};
+
 
 pub fn init_slave_controllers() {
     init_cache_getters();
@@ -116,9 +116,8 @@ fn cache_getter(code: DataInstructionCodes) -> Option< &'static Box<dyn CashedIn
 pub trait ResponsesParser {
     fn parse_response(&self, instruction_code: u8, data: &[u8]) -> Result<DataInstructions, Errors>;
     fn request_needs_cache(&self, instruction: DataInstructionCodes) -> bool;
-    fn parse_u32(&self, data: &[u8]) -> Result<u32, Errors> {
-        u32::parse(data)
-    }
+    fn parse_operation<'a>(&self, operation_code: u8, data: &'a [u8]) -> (Operation, Option<u32>, &'a [u8]);
+    fn is_response(&self, operation_code: u8) -> bool;
 }
 
 pub struct RequestsParserImpl {
@@ -130,6 +129,14 @@ impl RequestsParserImpl {
         Ok(Self {
             static_buffers_idx: get_next_static_buffer_index()?,
         })
+    }
+
+    fn parse_u32(&self, data: &[u8]) -> Result<u32, Errors> {
+        if data.len() >= 4 {
+            Ok(u32::extract(&data[0..4]))
+        } else {
+            Err(Errors::InvalidDataSize)
+        }
     }
 }
 
@@ -153,7 +160,67 @@ impl ResponsesParser for RequestsParserImpl {
             None => { false }
         }
     }
+
+    fn parse_operation<'a>(&self, operation_code: u8, data: &'a [u8]) -> (Operation, Option<u32>, &'a [u8]) {
+        let (operation, version) =
+            if operation_code == OperationCodes::Success as u8 {
+                (Operation::Set, 1)
+            } else if operation_code == OperationCodes::Response as u8 {
+                (Operation::Read, 1)
+            } else if operation_code == OperationCodes::Error as u8 {
+                (Operation::Error, 1)
+            } else if operation_code == OperationCodes::SuccessV2 as u8 {
+                (Operation::Set, 2)
+            } else if operation_code == OperationCodes::ResponseV2 as u8 {
+                (Operation::Read, 2)
+            } else if operation_code == OperationCodes::ErrorV2 as u8 {
+                (Operation::Error, 2)
+            } else {
+                (Operation::None, 0)
+            };
+
+        let (id, data) =
+            if version == 2 {
+                match self.parse_u32(data) {
+                    Ok(id) => (Some(id), &data[4..]),
+                    Err(_) => (None, data)
+                }
+            } else {
+                (None, data)
+            };
+
+        (operation, id, data)
+    }
     
+    fn is_response(&self, operation_code: u8) -> bool {
+        operation_code == OperationCodes::Success as u8 || operation_code == OperationCodes::Response as u8 || operation_code == OperationCodes::Error as u8 ||
+            operation_code == OperationCodes::SuccessV2 as u8 || operation_code == OperationCodes::ResponseV2 as u8 || operation_code == OperationCodes::ErrorV2 as u8
+    }
+    
+}
+#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Debug)]
+pub struct RelaySignalData {
+    relative_timestamp: RelativeSeconds,
+    relay_idx: u8,
+    is_on: bool,
+    is_called_internally: Option<bool>,
+}
+
+impl RelaySignalData {
+    pub fn new(relative_timestamp: RelativeSeconds, relay_idx: u8, is_on: bool, is_called_internally: Option<bool>) -> Self {
+        Self {
+            relative_timestamp,
+            relay_idx,
+            is_on,
+            is_called_internally,
+        }
+    }
+}
+
+#[derive(Copy, Clone, PartialEq, Debug)]
+pub struct SignalData {
+    pub instruction: Signals,
+    pub relay_signal_data: Option<RelaySignalData>,
 }
 
 pub trait SignalsParser {
@@ -224,6 +291,26 @@ impl SignalsParser for SignalsParserImpl {
 
 
 /*
+
+
+    #[test]
+    fn test_requests_controller_is_request() {
+
+        let controller = RequestsController::new(MockResponsesHandler::new(), default());
+
+        let responses = [OperationCodes::Response as u8, OperationCodes::Success as u8, OperationCodes::Error as u8,
+            OperationCodes::SuccessV2 as u8, OperationCodes::ResponseV2 as u8, OperationCodes::ErrorV2 as u8];
+        let not_responses = [OperationCodes::None as u8, OperationCodes::Set as u8, OperationCodes::Read as u8,
+            OperationCodes::Command as u8, OperationCodes::Signal as u8, 11, 12, 13, 14, 56, 128, 255];
+
+        for response in responses {
+            assert_eq!(true, controller.is_response(response));
+        }
+        for response in not_responses {
+            assert_eq!(false, controller.is_response(response));
+        }
+
+    }
 
 
     #[test]

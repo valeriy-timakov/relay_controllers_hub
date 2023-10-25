@@ -1,7 +1,6 @@
 #![deny(unsafe_code)]
 
 
-use crate::hal_ext::serial_transfer::Decomposable;
 
 #[derive(Debug, PartialEq, Copy, Clone)]
 pub enum Errors {
@@ -17,6 +16,8 @@ pub enum Errors {
     RequestsLimitReached,
     RequestsNeedsCacheAlreadySent,
     NoRequestsFound,
+    UndefinedOperation,
+    SentRequestsQueueIsEmpty,
     RelayIndexOutOfRange,
     RelayCountOverflow,
     SlaveControllersInstancesMaxCountReached,

@@ -29,6 +29,7 @@ pub enum OperationCodes {
 
 #[derive(Copy, Clone, PartialEq, Debug)]
 pub enum Operation {
+    None,
     Read,
     Set,
     Success,
@@ -582,7 +583,7 @@ impl Data for RelativeSeconds {
 
 }
 
-trait Extractor {
+pub trait Extractor {
     fn extract(data: &[u8]) -> Self;
 }
 
