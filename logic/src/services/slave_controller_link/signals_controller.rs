@@ -2,66 +2,45 @@
 
 use crate::errors::Errors;
 use crate::services::slave_controller_link::domain::Signals;
-use crate::services::slave_controller_link::parsers::{SignalData, SignalsParser};
+use crate::services::slave_controller_link::parsers::{ SignalParser, SignalParseResult };
 
 
 pub trait SignalsHandler {
-    fn on_signal(&mut self, signal_data: SignalData);
-    fn on_signal_error(&mut self, instruction: Signals, error: Errors, sent_to_slave_success: bool);
+    fn on_signal(&mut self, signal_data: SignalParseResult);
+    fn on_signal_parse_error(&mut self, error: Errors, sent_to_slave_success: bool, data: &[u8]);
+    fn on_signal_process_error(&mut self, error: Errors, sent_to_slave_success: bool, data: SignalParseResult);
 }
 
-pub trait SignalController {
-    fn process_signal(&mut self, data: &[u8]);
+pub trait SignalController<'a, SP: SignalParser<'a>> {
+    fn process_signal(&mut self, parser: SP);
 
 }
 
-pub struct SignalControllerImpl<SH, SP>
+pub struct SignalControllerImpl<SH>
     where
         SH: SignalsHandler,
-        SP: SignalsParser,
 {
     signal_handler: SH,
-    signal_parser: SP,
 }
 
-impl <SH, SP> SignalControllerImpl<SH, SP>
-    where
-        SH: SignalsHandler,
-        SP: SignalsParser,
-{
-    pub fn new(signal_handler: SH, signal_parser: SP) -> Self {
-        Self { signal_handler, signal_parser }
+impl <SH: SignalsHandler> SignalControllerImpl<SH> {
+    pub fn new(signal_handler: SH) -> Self {
+        Self { signal_handler }
     }
 }
 
-impl <SH, SP> SignalController for SignalControllerImpl<SH, SP>
+impl <'a, SH, SP> SignalController<'a, SP> for SignalControllerImpl<SH>
     where
         SH: SignalsHandler,
-        SP: SignalsParser,
+        SP: SignalParser<'a>,
 {
-    fn process_signal(&mut self, data: &[u8]) {
-
-        if data.len() < 1 {
-            self.signal_handler.on_signal_error(Signals::Unknown, Errors::InvalidDataSize, false);
-            return;
-        }
-
-        let instruction_code = data[0];
-        let data = &data[1..];
-
-        match self.signal_parser.parse_instruction(instruction_code) {
-            Some(instruction) => {
-                match self.signal_parser.parse(instruction, data) {
-                    Ok(signal_data) => {
-                        self.signal_handler.on_signal(signal_data);
-                    }
-                    Err(error) => {
-                        self.signal_handler.on_signal_error(instruction, error, false);
-                    }
-                }
+    fn process_signal<>(&mut self, payload: SP) {
+        match payload.parse() {
+            Ok(signal_data) => {
+                self.signal_handler.on_signal(signal_data);
             }
-            None => {
-                self.signal_handler.on_signal_error(Signals::Unknown, Errors::InstructionNotRecognized(instruction_code), false);
+            Err(error) => {
+                self.signal_handler.on_signal_parse_error(error, false, payload.data());
             }
         }
     }
@@ -81,144 +60,44 @@ mod tests {
 
 
     #[test]
-    fn test_signal_controller_should_report_error_on_empty_data() {
-        let mut signal_controller =
-            SignalControllerImpl::new(MockSignalsHandler::new(),
-                                      MockSignalsParser::new(Err(Errors::CommandDataCorrupted),
-                                                             None));
-        let data = [];
-
-        signal_controller.process_signal(&data);
-
-        assert_eq!(Some((Signals::Unknown, Errors::InvalidDataSize, false)),
-                   signal_controller.signal_handler.on_signal_error_params);
-        //should not call other methods
-        assert_eq!(None, signal_controller.signal_handler.on_signal_signal_data);
-        assert_eq!(None, signal_controller.signal_parser.test_data.borrow().parse_instruction_params);
-        assert_eq!(None, signal_controller.signal_parser.test_data.borrow().parse_params);
-    }
-
-    #[test]
     fn test_signal_controller_should_try_to_parse_signal_code_and_report_error() {
-        let mock_signal_parser = MockSignalsParser::new(
-            Err(Errors::CommandDataCorrupted), None);
+        let mut rng = rand::thread_rng();
         let mut signal_controller =
-            SignalControllerImpl::new( MockSignalsHandler::new(), mock_signal_parser);
-        let signal_code = Signals::MonitoringStateChanged as u8;
-        let data = [signal_code, 1, 2, 3, 4, 5, 6, 7, 8, 9];
+            SignalControllerImpl::new( MockSignalsHandler::new());
+        let mut rng = rand::thread_rng();
+        let error = Errors::CommandDataCorrupted;
+        let data = [0_u8, rng.gen(), rng.gen(), rng.gen()];
+        let mock_signal_parser = MockSignalParser::new(
+            Err(error), data.to_vec());
 
-        signal_controller.process_signal(&data);
+        signal_controller.process_signal(mock_signal_parser);
 
-        assert_eq!(Some((Signals::Unknown, Errors::InstructionNotRecognized(signal_code), false)),
-                   signal_controller.signal_handler.on_signal_error_params);
-        //should call parse signal code
-        assert_eq!(Some(signal_code as u8), signal_controller.signal_parser.test_data.borrow().parse_instruction_params);
-        //should not call other methods
-        assert_eq!(None, signal_controller.signal_parser.test_data.borrow().parse_params);
-        assert_eq!(None, signal_controller.signal_handler.on_signal_signal_data);
-    }
-
-    #[test]
-    fn test_signal_controller_should_try_parse_signal_body_and_report_error_if_any() {
-        let signal = Signals::MonitoringStateChanged;
-        let signal_parse_error = Errors::CommandDataCorrupted;
-        let mock_signal_parser = MockSignalsParser::new(
-            Err(signal_parse_error), Some(signal));
-        let mut signal_controller =
-            SignalControllerImpl::new( MockSignalsHandler::new(), mock_signal_parser);
-        let data = [signal as u8, 1, 2, 3, 4, 5, 6, 7, 8, 9];
-
-        signal_controller.process_signal(&data);
-
-        assert_eq!(Some((signal, signal_parse_error, false)),
-                   signal_controller.signal_handler.on_signal_error_params);
-        //should call parse signal code
-        assert_eq!(Some(signal as u8), signal_controller.signal_parser.test_data.borrow().parse_instruction_params);
-        //should call parse signal body
-        assert_eq!(Some((signal, (&data[1..]).to_vec())), signal_controller.signal_parser.test_data.borrow().parse_params);
+        assert_eq!(Some((error, false, &data)),signal_controller.signal_handler.on_signal_error_params);
         //should not call other methods
         assert_eq!(None, signal_controller.signal_handler.on_signal_signal_data);
-
     }
 
     #[test]
     fn test_signal_controller_should_proxy_parsed_signal_on_success() {
-        let signal = Signals::MonitoringStateChanged;
         let mut rng = rand::thread_rng();
-        let parsed_signal_data = SignalData {
-            instruction: signal,
-            relay_signal_data: Some(RelaySignalData::new (
-                RelativeSeconds::new(rng.gen_range(1..u32::MAX)),
-                rng.gen_range(0..15),
-                rng.gen_range(0..1) == 1,
-                Some(rng.gen_range(0..1) == 1),
-            )),
-        };
-        let mock_signal_parser = MockSignalsParser::new(Ok(parsed_signal_data), Some(signal));
         let mut signal_controller =
-            SignalControllerImpl::new( MockSignalsHandler::new(), mock_signal_parser);
-        let data = [signal as u8, 1, 2, 3, 4, 5, 6, 7, 8, 9];
+            SignalControllerImpl::new( MockSignalsHandler::new());
+        let mut rng = rand::thread_rng();
+        let result = SignalParseResult::new(Signals::MonitoringStateChanged, None);
+        let data = [0_u8, rng.gen(), rng.gen(), rng.gen()];
+        let mock_signal_parser = MockSignalParser::new(
+            Ok(result), data.to_vec());
 
-        signal_controller.process_signal(&data);
+        signal_controller.process_signal(mock_signal_parser);
 
-        assert_eq!(Some(parsed_signal_data), signal_controller.signal_handler.on_signal_signal_data);
-        //should call parse signal code
-        assert_eq!(Some(signal as u8), signal_controller.signal_parser.test_data.borrow().parse_instruction_params);
-        //should call parse signal body
-        assert_eq!(Some((signal, (&data[1..]).to_vec())), signal_controller.signal_parser.test_data.borrow().parse_params);
+        assert_eq!(Some(result), signal_controller.signal_handler.on_signal_signal_data);
         //should not call other methods
         assert_eq!(None, signal_controller.signal_handler.on_signal_error_params);
-
     }
 
-
-    struct MockSignalsParserTestData {
-        parse_params: Option<(Signals, Vec<u8>)>,
-        parse_instruction_params: Option<u8>,
-    }
-
-    impl MockSignalsParserTestData {
-        fn new() -> Self {
-            Self {
-                parse_params : None,
-                parse_instruction_params: None,
-            }
-        }
-    }
-
-    struct MockSignalsParser {
-        parse_result: Result<SignalData, Errors>,
-        parse_instruction_result: Option<Signals>,
-        test_data: RefCell<MockSignalsParserTestData>,
-    }
-
-    impl MockSignalsParser {
-        pub fn new(parse_result: Result<SignalData, Errors>, parse_instruction_result: Option<Signals>) -> Self {
-            let test_data = RefCell::new(MockSignalsParserTestData::new());
-            Self {
-                parse_result,
-                parse_instruction_result,
-                test_data,
-            }
-        }
-    }
-
-    impl SignalsParser for MockSignalsParser {
-
-        fn parse(&self, instruction: Signals, data: &[u8]) -> Result<SignalData, Errors> {
-            self.test_data.borrow_mut().parse_params = Some((instruction, data.to_vec()));
-            self.parse_result
-        }
-
-
-        fn parse_instruction(&self, instruction_code: u8) -> Option<Signals> {
-            self.test_data.borrow_mut().parse_instruction_params = Some(instruction_code);
-            self.parse_instruction_result
-        }
-    }
 
     struct MockSignalsHandler {
-        on_signal_signal_data: Option<SignalData>,
+        on_signal_signal_data: Option<SignalParseResult>,
         on_signal_error_params: Option<(Signals, Errors, bool)>,
     }
 
@@ -232,20 +111,45 @@ mod tests {
     }
 
     impl SignalsHandler for MockSignalsHandler {
-        fn on_signal(&mut self, signal_data: SignalData) {
+        fn on_signal(&mut self, signal_data: SignalParseResult) {
             self.on_signal_signal_data = Some(signal_data);
         }
-        fn on_signal_error(&mut self, instruction: Signals, error: Errors, sent: bool) {
+        fn on_signal_parse_error(&mut self, instruction: Signals, error: Errors, sent: bool) {
             self.on_signal_error_params = Some((instruction, error, sent));
         }
     }
 
     impl SignalsHandler for Rc<RefCell<MockSignalsHandler>> {
-        fn on_signal(&mut self, signal_data: SignalData) {
+        fn on_signal(&mut self, signal_data: SignalParseResult) {
             self.borrow_mut().on_signal(signal_data);
         }
-        fn on_signal_error(&mut self, instruction: Signals, error: Errors, sent: bool) {
-            self.borrow_mut().on_signal_error(instruction, error, sent);
+        fn on_signal_parse_error(&mut self, instruction: Signals, error: Errors, sent: bool) {
+            self.borrow_mut().on_signal_parse_error(instruction, error, sent);
         }
+    }
+
+    struct MockSignalParser {
+        parse_result: Result<SignalParseResult, Errors>,
+        test_data: Vec<u8>,
+    }
+
+    impl MockSignalParser {
+        pub fn new(parse_result: Result<SignalParseResult, Errors>, test_data: Vec<u8>) -> Self {
+            Self {
+                parse_result,
+                test_data,
+            }
+        }
+    }
+
+    impl <'a> SignalParser<'a> for MockSignalParser {
+
+            fn parse(&self) -> Result<SignalParseResult, Errors> {
+                self.parse_result
+            }
+
+            fn data(&self) -> &[u8] {
+                self.test_data.into()
+            }
     }
 }

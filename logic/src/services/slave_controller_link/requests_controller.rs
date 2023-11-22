@@ -4,7 +4,7 @@
 use crate::errors::Errors;
 use crate::hal_ext::rtc_wrapper::{RelativeMillis };
 use crate::services::slave_controller_link::domain::{DataInstructionCodes, DataInstructions, ErrorCode, Operation, OperationCodes, Version};
-use crate::services::slave_controller_link::parsers::{ResponsesParser};
+use crate::services::slave_controller_link::parsers::{ResponseParser, ResponsePayload, ResponseBodyParser, ResponsePayloadParsed, ResponseDataParser};
 
 const MAX_REQUESTS_COUNT: usize = 4;
 
@@ -27,12 +27,12 @@ impl SentRequest {
     }
 }
 
-pub trait ResponseHandler {
+pub trait ResponseHandler<BP: ResponseBodyParser> {
     fn on_request_success(&mut self, request: SentRequest);
-    fn on_request_error(&mut self, request: SentRequest, error_code: ErrorCode);
-    fn on_request_process_error(&mut self, request: SentRequest, error: Errors, data: &[u8]);
-    fn on_request_search_error(&mut self, operation: Operation, instruction: u8, id: Option<u32>, error: Errors, data: &[u8]);
     fn on_request_response(&mut self, request: SentRequest, response: DataInstructions);
+    fn on_request_error(&mut self, request: SentRequest, error_code: ErrorCode);
+    fn on_request_parse_error(&mut self, request: Option<SentRequest>, error: Errors, data: &[u8]);
+    fn on_request_search_error(&mut self, payload: ResponsePayloadParsed<BP>, error: Errors);
 }
 
 pub trait RequestsControllerTx {
@@ -40,47 +40,56 @@ pub trait RequestsControllerTx {
     fn check_request(&mut self, instruction: DataInstructionCodes) -> Result<Option<u32>, Errors>;
 }
 
-pub trait RequestsControllerRx {
-    fn process_response(&mut self, operation_code: u8, data: &[u8]);
-    fn is_response(&self, operation_code: u8) -> bool;
+pub trait RequestsControllerRx<RP, RBP>
+    where
+        RP: ResponseParser<RBP>,
+        RBP: ResponseBodyParser,
+{
+    fn process_response(&mut self, payload: RP);
 }
 
-pub struct RequestsController<RH: ResponseHandler, RP: ResponsesParser> {
+pub struct RequestsController<RH, RBP>
+    where
+        RH: ResponseHandler<RBP>,
+        RBP: ResponseBodyParser,
+{
     sent_requests: [Option<SentRequest>; MAX_REQUESTS_COUNT],
     requests_count: usize,
     request_needs_cache_send: bool,
     response_handler: RH,
-    requests_parser: RP,
+    response_body_parser: RBP,
     last_request_id: u32,
-    api_version: Version,
 }
 
-impl <RH: ResponseHandler, RP: ResponsesParser> RequestsController<RH, RP> {
-    pub fn new(response_handler: RH, requests_parser: RP, api_version: Version) -> Self {
+impl <RH: ResponseHandler<RBP>, RBP: ResponseBodyParser> RequestsController<RH, RBP> {
+    pub fn new(response_handler: RH, response_body_parser: RBP) -> Self {
         Self {
             sent_requests: [None, None, None, None],
             requests_count: 0,
             request_needs_cache_send: false,
             response_handler,
-            requests_parser,
+            response_body_parser,
             last_request_id: 0,
-            api_version,
         }
     }
 }
 
-impl <RH: ResponseHandler, RP: ResponsesParser> RequestsControllerTx for RequestsController<RH, RP> {
+impl <RH, RBP> RequestsControllerTx for RequestsController<RH, RBP>
+    where
+        RH: ResponseHandler<RBP>,
+        RBP: ResponseBodyParser,
+{
 
     fn check_request(&mut self, instruction_code: DataInstructionCodes) -> Result<Option<u32>, Errors> {
         if self.requests_count == MAX_REQUESTS_COUNT {
             return Err(Errors::RequestsLimitReached);
         }
-        if self.requests_parser.request_needs_cache(instruction_code) && self.request_needs_cache_send {
+        if self.response_body_parser.request_needs_cache(instruction_code) && self.request_needs_cache_send {
             return Err(Errors::RequestsNeedsCacheAlreadySent);
         }
 
         self.last_request_id += 1;
-        if self.api_version == Version::V1 {
+        if self.response_body_parser.slave_controller_version() == Version::V1 {
             Ok(None)
         } else {
             Ok(Some(self.last_request_id))
@@ -88,7 +97,7 @@ impl <RH: ResponseHandler, RP: ResponsesParser> RequestsControllerTx for Request
     }
 
     fn add_sent_request(&mut self, mut request: SentRequest) {
-        if self.requests_parser.request_needs_cache(request.instruction) {
+        if self.response_body_parser.request_needs_cache(request.instruction) {
             self.request_needs_cache_send = true;
         }
         self.sent_requests[self.requests_count] = Some(request);
@@ -97,41 +106,46 @@ impl <RH: ResponseHandler, RP: ResponsesParser> RequestsControllerTx for Request
 
 }
 
-impl <RH: ResponseHandler, RP: ResponsesParser> RequestsControllerRx for RequestsController<RH, RP> {
+impl <RH, RP, RBP> RequestsControllerRx<RP, RBP> for RequestsController<RH, RBP>
+    where
+        RH: ResponseHandler<RBP>,
+        RP: ResponseParser<RBP>,
+        RBP: ResponseBodyParser,
+{
 
-    fn process_response(&mut self, operation_code: u8, data: &[u8]) {
-        let instruction_code = data[0];
-        let data = &data[1..];
-        let (operation, id, data) =
-            self.requests_parser.parse_operation(operation_code, data);
+    fn process_response(&mut self, payload: RP) {
 
-        if operation != Operation::Error && operation != Operation::Set && operation != Operation::Read {
-            self.response_handler.on_request_search_error(
-                operation, instruction_code, id, Errors::UndefinedOperation, data);
-        }
+        let response = match payload.parse(&self.response_body_parser) {
+            Ok(response) => response,
+            Err(error) => {
+                self.response_handler.on_request_parse_error(None, error, payload.data());
+                return;
+            }
+        };
 
+        let response_operation = response.operation();
         if self.requests_count > 0 {
             for i in (0..self.requests_count).rev() {
                 if let Some(request) = self.sent_requests[i] {
                     if
-                        id == request.id && request.instruction as u8 == instruction_code &&
-                            (operation == Operation::Error || request.operation == operation)
+                        response.request_id() == request.id && response.instruction() == request.instruction &&
+                            (response_operation == Operation::Error || response_operation == request.operation)
                     {
-                        if operation == Operation::Set {
+                        if response_operation == Operation::Set {
                             self.response_handler.on_request_success(request);
-                        } else if operation == Operation::Error {
-                            self.response_handler.on_request_error(request, ErrorCode::for_code(instruction_code));
-                        } else if operation == Operation::Read {
-                            match self.requests_parser.parse_response(instruction_code, data) {
-                                Ok(response) => {
-                                    self.response_handler.on_request_response(request, response);
+                        } else if response_operation == Operation::Error {
+                            self.response_handler.on_request_error(request, response.error_code());
+                        } else if response_operation == Operation::Read {
+                            match response.parse() {
+                                Ok(response_body) => {
+                                    self.response_handler.on_request_response(request, response_body);
                                 }
                                 Err(error) => {
-                                    self.response_handler.on_request_process_error(request, error, data);
+                                    self.response_handler.on_request_parse_error(Some(request), error, response.data());
                                 }
                             }
                         }
-                        if operation == Operation::Read && self.requests_parser.request_needs_cache(request.instruction) {
+                        if response_operation == Operation::Read && self.response_body_parser.request_needs_cache(request.instruction) {
                             self.request_needs_cache_send = false;
                         }
                         let mut next_pos = i + 1;
@@ -146,17 +160,10 @@ impl <RH: ResponseHandler, RP: ResponsesParser> RequestsControllerRx for Request
                     }
                 }
             }
-            self.response_handler.on_request_search_error(
-                operation, instruction_code, id, Errors::NoRequestsFound, data);
+            self.response_handler.on_request_search_error(response, Errors::NoRequestsFound);
         } else {
-            self.response_handler.on_request_search_error(
-                operation, instruction_code, id, Errors::SentRequestsQueueIsEmpty, data);
+            self.response_handler.on_request_search_error(response, Errors::SentRequestsQueueIsEmpty);
         }
-    }
-
-    #[inline(always)]
-    fn is_response(&self, operation_code: u8) -> bool {
-        self.requests_parser.is_response(operation_code)
     }
 
 }
@@ -169,24 +176,24 @@ mod tests {
     use alloc::rc::Rc;
     use alloc::vec::Vec;
     use core::cell::{Ref, RefCell};
+    use core::marker::PhantomData;
     use core::ops::Deref;
     use super::*;
     use quickcheck_macros::quickcheck;
     use rand::distributions::uniform::SampleBorrow;
     use rand::prelude::*;
     use crate::errors::DMAError;
-    use crate::services::slave_controller_link::domain::{Operation, Response};
-    use crate::services::slave_controller_link::parsers::RequestsParserImpl;
-
+    use crate::services::slave_controller_link::domain::{Conversation, Operation, Response};
+    use crate::services::slave_controller_link::parsers::{ResponseBodyParserImpl};
 
 
     #[test]
     fn test_requests_controller_check_request_should_return_error_on_cache_overflow() {
         let mock_response_handler = MockResponsesHandler::new();
-        let mock_responses_parser = default();
+        let mock_responses_parser = default_mock_parser(Version::V1);
 
         let mut tested =
-            RequestsController::new(mock_response_handler, mock_responses_parser, Version::V1);
+            RequestsController::new(mock_response_handler, mock_responses_parser,);
         tested.requests_count = MAX_REQUESTS_COUNT;
 
         for data_instruction_code in ADD_DATA_INSTRUCTION_CODES {
@@ -199,10 +206,11 @@ mod tests {
     #[test]
     fn test_requests_controller_check_request_should_return_error_on_needed_cache_request_send_duplication() {
         let mock_response_handler = MockResponsesHandler::new();
-        let mock_responses_parser = new_check_needs_cache( |_| true );
+        let mock_responses_parser = new_check_needs_cache(true,
+                                                          Version::V1);
 
         let mut tested =
-            RequestsController::new(mock_response_handler, mock_responses_parser, Version::V1);
+            RequestsController::new(mock_response_handler, mock_responses_parser);
         tested.request_needs_cache_send = true;
 
         for data_instruction_code in ADD_DATA_INSTRUCTION_CODES {
@@ -213,12 +221,13 @@ mod tests {
     }
 
     #[test]
-    fn test_requests_controller_check_request_success() {
+    fn test_requests_controller_check_request_success_v1() {
         let mock_response_handler = MockResponsesHandler::new();
-        let mock_responses_parser = new_check_needs_cache( |_| false );
+        let mock_responses_parser = new_check_needs_cache(false,
+                                                          Version::V1);
 
         let mut tested =
-            RequestsController::new(mock_response_handler, mock_responses_parser, Version::V1);
+            RequestsController::new(mock_response_handler, mock_responses_parser);
 
         for data_instruction_code in ADD_DATA_INSTRUCTION_CODES {
             tested.request_needs_cache_send = false;
@@ -234,10 +243,11 @@ mod tests {
     #[test]
     fn test_requests_controller_check_request_success_v2() {
         let mock_response_handler = MockResponsesHandler::new();
-        let mock_responses_parser = new_check_needs_cache( |_| false );
+        let mock_responses_parser = new_check_needs_cache(false,
+                                                          Version::V2);
 
         let mut tested =
-            RequestsController::new(mock_response_handler, mock_responses_parser, Version::V2);
+            RequestsController::new(mock_response_handler, mock_responses_parser);
 
         let mut count = 0_u32;
         for data_instruction_code in ADD_DATA_INSTRUCTION_CODES {
@@ -256,12 +266,11 @@ mod tests {
     #[test]
     fn test_requests_controller_add_sent_request() {
         let mock_response_handler = MockResponsesHandler::new();
-        let needs_cache_result = Rc::new(RefCell::new(false));
-        let needs_cache_result_clone = needs_cache_result.clone();
-        let mock_responses_parser = new_check_needs_cache(move |_| *needs_cache_result_clone.borrow() );
+        let mock_responses_parser = new_check_needs_cache(false,
+                                                          Version::V1);
 
         let mut tested =
-            RequestsController::new(mock_response_handler, mock_responses_parser, Version::V1);
+            RequestsController::new(mock_response_handler, mock_responses_parser);
 
         let mut rng = rand::thread_rng();
         let mut requests = [
@@ -283,7 +292,7 @@ mod tests {
         let mut id = 0;
         tested.request_needs_cache_send = false;
 
-        *needs_cache_result.borrow_mut() = false;
+        tested.response_body_parser.request_needs_cache_result = false;
         tested.add_sent_request(requests[0]);
 
         count += 1;
@@ -295,7 +304,7 @@ mod tests {
 
         tested.request_needs_cache_send = false;
 
-        *needs_cache_result.borrow_mut() = true;
+        tested.response_body_parser.request_needs_cache_result = true;
         tested.add_sent_request(requests[1]);
 
         count += 1;
@@ -304,7 +313,7 @@ mod tests {
         assert_eq!(true, tested.request_needs_cache_send);
         assert_eq!(Some(requests[1]), tested.sent_requests[tested.requests_count - 1]);
 
-        *needs_cache_result.borrow_mut() = false;
+        tested.response_body_parser.request_needs_cache_result = false;
         tested.add_sent_request(requests[2]);
 
         count += 1;
@@ -320,10 +329,11 @@ mod tests {
     #[test]
     fn test_requests_controller_check_request_should_return_error_on_cache_overflow_outer() {
         let mock_response_handler = MockResponsesHandler::new();
-        let mock_responses_parser = new_check_needs_cache(|_| { false });
+        let mock_responses_parser = new_check_needs_cache(false,
+                                                          Version::V1);
 
         let mut tested =
-            RequestsController::new(mock_response_handler, mock_responses_parser, Version::V1);
+            RequestsController::new(mock_response_handler, mock_responses_parser);
         let mut rng = rand::thread_rng();
         let request = SentRequest::new (
             None, Operation::None, DataInstructionCodes::None,
@@ -341,29 +351,25 @@ mod tests {
 
     #[test]
     fn test_requests_controller_check_request_should_return_error_on_needed_cache_request_send_duplication_outer() {
+        let mut rng = rand::thread_rng();
         let mock_response_handler = MockResponsesHandler::new();
-        let needs_cache_result = Rc::new(RefCell::new(false));
-        let needs_cache_result_clone = needs_cache_result.clone();
-        let operation = Operation::Success;
-        let mock_responses_parser = MockResponsesParser::new(
-            |_, _| { unimplemented!("parse_response") },
-            move |_| *needs_cache_result_clone.borrow(),
-            |_, _| { (operation, None, &[0, 0, 0, 0]) },
-            false
+        let operation = Operation::Set;
+        let parsed_data = [rng.gen(), rng.gen()];
+        let mock_responses_parser = MockResponseBodyParser::new(
+            || Err(Errors::NoRequestsFound), false,
+            Ok(Some(0)), Version::V1
         );
 
         let mut tested =
-            RequestsController::new(mock_response_handler, mock_responses_parser, Version::V1);
+            RequestsController::new(mock_response_handler, mock_responses_parser);
 
-        let mut rng = rand::thread_rng();
         let request = SentRequest::new (
             None, operation, DataInstructionCodes::None,
             RelativeMillis::new(rng.gen_range(1..u32::MAX)));
 
 
-        *needs_cache_result.borrow_mut() = false;
+        tested.response_body_parser.request_needs_cache_result = false;
         tested.add_sent_request(request);
-        *needs_cache_result.borrow_mut() = false;
 
         for data_instruction_code in ADD_DATA_INSTRUCTION_CODES {
             let result = tested.check_request(data_instruction_code);
@@ -371,10 +377,20 @@ mod tests {
             assert_eq!(Ok(None), result);
         }
 
-        tested.process_response(request.operation as u8, &[request.instruction as u8, 0, 0, 0, 0]);
-        *needs_cache_result.borrow_mut() = false;
+        let mock_response_parser = MockResponseParser::new(
+        Ok(MockResponsePreParseResult {
+            operation: operation,
+            instruction: DataInstructionCodes::Id(0),
+            request_id: None,
+            needs_cache: false,
+            error_code: ErrorCode::OK,
+            data: parsed_data.to_vec(),
+        }), parsed_data.to_vec() );
+
+        tested.process_response(mock_response_parser);
+        tested.response_body_parser.request_needs_cache_result = false;
         tested.add_sent_request(request);
-        *needs_cache_result.borrow_mut() = true;
+        tested.response_body_parser.request_needs_cache_result = true;
 
         for data_instruction_code in ADD_DATA_INSTRUCTION_CODES {
             let result = tested.check_request(data_instruction_code);
@@ -382,10 +398,10 @@ mod tests {
             assert_eq!(Ok(None), result);
         }
 
-        tested.process_response(request.operation as u8, &[request.instruction as u8, 0, 0, 0, 0]);
-        *needs_cache_result.borrow_mut() = true;
+        tested.process_response(mock_response_parser);
+        tested.response_body_parser.request_needs_cache_result = true;
         tested.add_sent_request(request);
-        *needs_cache_result.borrow_mut() = false;
+        tested.response_body_parser.request_needs_cache_result = false;
 
         for data_instruction_code in ADD_DATA_INSTRUCTION_CODES {
             let result = tested.check_request(data_instruction_code);
@@ -393,10 +409,10 @@ mod tests {
             assert_eq!(Ok(None), result);
         }
 
-        tested.process_response(request.operation as u8, &[request.instruction as u8, 0, 0, 0, 0]);
-        *needs_cache_result.borrow_mut() = true;
+        tested.process_response(mock_response_parser);
+        tested.response_body_parser.request_needs_cache_result = true;
         tested.add_sent_request(request);
-        *needs_cache_result.borrow_mut() = true;
+        tested.response_body_parser.request_needs_cache_result = true;
 
         for data_instruction_code in ADD_DATA_INSTRUCTION_CODES {
             let result = tested.check_request(data_instruction_code);
@@ -405,33 +421,694 @@ mod tests {
         }
     }
 
+
     #[test]
-    fn test_requests_controller_is_request_should_proxy_to_parser() {
+    fn test_process_response_should_proxy_error_on_parse_error() {
+        for api_version in [Version::V1, Version::V2] {
+            let mut rng = rand::thread_rng();
+            let mut data: Vec<u8> = Vec::new();
+            for i in 1..8 {
+                data.push(rng.gen_range(1..u8::MAX));
+            }
 
-        let mock_parser = MockResponsesParser::new(
-            |_, _| { unimplemented!("parse_response") },
-            |_| { unimplemented!("request_needs_cache") },
-            |_, _| { unimplemented!("parse_operation") },
-            false
-        );
+            let mock_responses_parser = MockResponseBodyParser::new_need_cache(false);
+            let mock_response_handler = MockResponsesHandler::new();
 
-        let mut controller = RequestsController::new(
-            MockResponsesHandler::new(), default(), Version::V1);
+            let error = Errors::DataCorrupted;
 
-        let responses = [OperationCodes::Response as u8, OperationCodes::Success as u8, OperationCodes::Error as u8,
-            OperationCodes::SuccessV2 as u8, OperationCodes::ResponseV2 as u8, OperationCodes::ErrorV2 as u8,
-            OperationCodes::None as u8, OperationCodes::Set as u8, OperationCodes::Read as u8,
-            OperationCodes::Command as u8, OperationCodes::Signal as u8, 11, 12, 13, 14, 56, 128, 255];
+            let mut tested =
+                RequestsController::new(mock_response_handler, mock_responses_parser);
 
-        let mut rng = rand::thread_rng();
-        for response in responses {
-            controller.requests_parser.is_response_result = rng.gen();
-            assert_eq!(controller.requests_parser.is_response_result, controller.is_response(response));
-            assert_eq!(Some(response), *controller.requests_parser.is_response_param.borrow());
+            let mock_response_parser = MockResponseParser::new_pp_checker(
+                Err(error), data, Some(|rbp: & MockResponseBodyParser| {
+                    assert_eq!(Some(&tested.response_body_parser), rbp);
+                }));
+
+
+            tested.process_response(mock_response_parser);
+
+
+            assert_eq!(Some((None, error, data)), tested.response_handler.on_request_parse_error_params);
+            //nothing else should be called
+            assert_eq!(None, tested.response_handler.on_request_search_error_params);
+            assert_eq!(None, tested.response_handler.on_request_response_params);
+            assert_eq!(None, tested.response_handler.on_request_success_params);
+            assert_eq!(None, tested.response_handler.on_request_error_params);
+            assert_eq!(None, *(tested.response_body_parser.request_needs_cache_param.borrow()));
         }
+    }
+/*
+    #[test]
+    fn test_process_response_v1_should_proxy_error_on_empty_queue() {
+        let mut rng = rand::thread_rng();
+        let operation_code = rng.gen_range(1..u8::MAX);
+        let operation = Operation::Set;
+        let instruction_code = rng.gen_range(1..u8::MAX);
+        let data = [instruction_code, rng.gen_range(1..u8::MAX), rng.gen_range(1..u8::MAX), rng.gen_range(1..u8::MAX)];
 
+
+        let mock_responses_parser = MockResponseBodyParser::new(
+            || Err(Errors::NoRequestsFound), false,
+            Err(Errors::NotEnoughDataGot), Version::V1
+        );
+        let mock_response_handler = MockResponsesHandler::new();
+
+        let mut tested =
+            RequestsController::new(mock_response_handler, mock_responses_parser);
+
+        let mock_response_parser = MockResponseParser::new(
+            MockResponsePreParseResult {
+                operation: operation,
+                instruction: DataInstructionCodes::Id(0),
+                request_id: None,
+                needs_cache: false,
+                error_code: ErrorCode::Ok,
+                data: parsed_data.to_vec(),
+            }, parsed_data.to_vec() );
+
+        tested.process_response(operation_code, &data);
+
+        assert_eq!(Some(operation_code), *tested.response_body_parser.parse_operation_param.borrow());
+        assert_eq!(Some((operation, instruction_code, None, Errors::SentRequestsQueueIsEmpty, data[1..].to_vec())),
+                   tested.response_handler.on_request_search_error_params);
+        //nothing else should be called
+        assert_eq!(None, *tested.response_body_parser.parse_id_param.borrow());
+        assert_eq!(None, tested.response_handler.on_request_process_error_params);
+        assert_eq!(None, tested.response_handler.on_request_response_params);
+        assert_eq!(None, tested.response_handler.on_request_success_params);
+        assert_eq!(None, tested.response_handler.on_request_error_params);
+        assert_eq!(None, *tested.response_body_parser.parse_response_params.borrow());
+        assert_eq!(None, *tested.response_body_parser.request_needs_cache_param.borrow());
     }
 
+    #[test]
+    fn test_process_response_v2_should_proxy_error_on_empty_queue() {
+        let mut rng = rand::thread_rng();
+        let operation_code = rng.gen_range(1..u8::MAX);
+        let operation = Operation::Set;
+        let instruction_code = rng.gen_range(1..u8::MAX);
+        let mut data: Vec<u8> = Vec::new();
+        data.push(instruction_code);
+        for i in 1..8 {
+            data.push(rng.gen_range(1..u8::MAX));
+        }
+        let data = data.as_slice();
+        let id: u32 = rng.next_u32();
+
+        let parsed_data = [rng.gen(), rng.gen()];
+
+        let mock_responses_parser = MockResponseBodyParser::new(
+            || Err(Errors::NoRequestsFound), false, Ok(Some(id))
+        );
+        let mock_response_handler = MockResponsesHandler::new();
+
+        let mut tested =
+            RequestsController::new(mock_response_handler, mock_responses_parser, Version::V2);
+
+        let mock_response_parser = MockResponseParser::new(
+            MockResponsePreParseResult {
+                operation: operation,
+                instruction: DataInstructionCodes::Id(0),
+                request_id: None,
+                needs_cache: false,
+                error_code: ErrorCode::Ok,
+                data: parsed_data.to_vec(),
+            }, parsed_data.to_vec() );
+
+        tested.process_response(operation_code, &data);
+
+        assert_eq!(Some(data[1..].to_vec()), *tested.response_body_parser.parse_id_param.borrow());
+        assert_eq!(Some(operation_code), *tested.response_body_parser.parse_operation_param.borrow());
+        assert_eq!(Some((operation, instruction_code, Some(id), Errors::SentRequestsQueueIsEmpty, data[5..].to_vec())),
+                   tested.response_handler.on_request_search_error_params);
+        //nothing else should be called
+        assert_eq!(None, tested.response_handler.on_request_process_error_params);
+        assert_eq!(None, tested.response_handler.on_request_response_params);
+        assert_eq!(None, tested.response_handler.on_request_success_params);
+        assert_eq!(None, tested.response_handler.on_request_error_params);
+        assert_eq!(None, *tested.response_body_parser.parse_response_params.borrow());
+        assert_eq!(None, *tested.response_body_parser.request_needs_cache_param.borrow());
+    }
+
+    #[test]
+    fn test_process_response_v1_should_proxy_error_on_correspondig_request_not_found() {
+        let mut rng = rand::thread_rng();
+        let operation_code = rng.gen_range(1..u8::MAX);
+        let operation = Operation::Set;
+        let instruction_code = rng.gen_range(1..u8::MAX);
+        let data = [instruction_code, rng.gen_range(1..u8::MAX), rng.gen_range(1..u8::MAX), rng.gen_range(1..u8::MAX)];
+
+
+        let mock_responses_parser = MockResponseBodyParser::new(
+            || Err(Errors::NotEnoughDataGot), false,
+            Err(Errors::NotEnoughDataGot), Version::V1
+        );
+        let mock_response_handler = MockResponsesHandler::new();
+
+        let mock_response_parser = MockResponseParser::new(
+            MockResponsePreParseResult {
+                operation: operation,
+                instruction: DataInstructionCodes::Id(0),
+                request_id: None,
+                needs_cache: false,
+                error_code: ErrorCode::Ok,
+                data: parsed_data.to_vec()
+            }, parsed_data.to_vec() );
+
+        let mut tested =
+            RequestsController::new(mock_response_handler, mock_responses_parser);
+
+        tested.add_sent_request(SentRequest::new(
+            None, Operation::Error, DataInstructionCodes::None, RelativeMillis::new(rng.next_u32())));
+        *tested.response_body_parser.request_needs_cache_param.borrow_mut() = None;
+
+        tested.process_response(operation_code, &data);
+
+        assert_eq!(Some(operation_code), *tested.response_body_parser.parse_operation_param.borrow());
+        assert_eq!(Some((operation, instruction_code, None, Errors::NoRequestsFound, data[1..].to_vec())),
+                   tested.response_handler.on_request_search_error_params);
+        //nothing else should be called
+        assert_eq!(None, *tested.response_body_parser.parse_id_param.borrow());
+        assert_eq!(None, tested.response_handler.on_request_process_error_params);
+        assert_eq!(None, tested.response_handler.on_request_response_params);
+        assert_eq!(None, tested.response_handler.on_request_success_params);
+        assert_eq!(None, tested.response_handler.on_request_error_params);
+        assert_eq!(None, *tested.response_body_parser.parse_response_params.borrow());
+        assert_eq!(None, *tested.response_body_parser.request_needs_cache_param.borrow());
+    }
+
+    #[test]
+    fn test_process_response_v2_should_proxy_error_on_correspondig_request_not_found() {
+        let mut rng = rand::thread_rng();
+        let operation_code = rng.gen_range(1..u8::MAX);
+        let operation = Operation::Set;
+        let instruction_code = rng.gen_range(1..u8::MAX);
+        let mut data: Vec<u8> = Vec::new();
+        data.push(instruction_code);
+        for i in 1..8 {
+            data.push(rng.gen_range(1..u8::MAX));
+        }
+        let data = data.as_slice();
+        let id: u32 = rng.next_u32();
+
+        let parsed_data = [rng.gen(), rng.gen()];
+
+        let mock_responses_parser = MockResponseBodyParser::new(
+            || Err(Errors::NotEnoughDataGot), false, Ok(Some(id))
+        );
+        let mock_response_handler = MockResponsesHandler::new();
+
+        let mut tested =
+            RequestsController::new(mock_response_handler, mock_responses_parser, Version::V2);
+
+        let mock_response_parser = MockResponseParser::new(
+            MockResponsePreParseResult {
+                operation: operation,
+                instruction: DataInstructionCodes::Id(0),
+                request_id: None,
+                needs_cache: false,
+                error_code: ErrorCode::Ok,
+                data: parsed_data.to_vec(),
+            }, parsed_data.to_vec() );
+
+        tested.add_sent_request(SentRequest::new(
+            Some(id), Operation::Error, DataInstructionCodes::None, RelativeMillis::new(rng.next_u32())));
+        *tested.response_body_parser.request_needs_cache_param.borrow_mut() = None;
+
+        tested.process_response(operation_code, &data);
+
+        assert_eq!(Some(data[1..].to_vec()), *tested.response_body_parser.parse_id_param.borrow());
+        assert_eq!(Some(operation_code), *tested.response_body_parser.parse_operation_param.borrow());
+        assert_eq!(Some((operation, instruction_code, Some(id), Errors::NoRequestsFound, data[5..].to_vec())),
+                   tested.response_handler.on_request_search_error_params);
+        //nothing else should be called
+        assert_eq!(None, tested.response_handler.on_request_process_error_params);
+        assert_eq!(None, tested.response_handler.on_request_response_params);
+        assert_eq!(None, tested.response_handler.on_request_success_params);
+        assert_eq!(None, tested.response_handler.on_request_error_params);
+        assert_eq!(None, *tested.response_body_parser.parse_response_params.borrow());
+        assert_eq!(None, *tested.response_body_parser.request_needs_cache_param.borrow());
+    }
+
+
+    #[test]
+    fn test_process_response_v1_should_inform_set_if_set_request_found() {
+        let mut rng = rand::thread_rng();
+        let operation_code = rng.gen_range(1..u8::MAX);
+        let operation = Operation::Set;
+        let instruction_code = ADD_DATA_INSTRUCTION_CODES[
+            rng.gen_range(0..ADD_DATA_INSTRUCTION_CODES.len() as usize)];
+        let data = [instruction_code as u8, rng.gen_range(1..u8::MAX),
+            rng.gen_range(1..u8::MAX), rng.gen_range(1..u8::MAX)];
+
+
+        let mock_responses_parser = MockResponseBodyParser::new(
+            || Err(Errors::NotEnoughDataGot), false,
+            Err(Errors::NotEnoughDataGot), Version::V1
+        );
+        let mock_response_handler = MockResponsesHandler::new();
+
+        let mut tested =
+            RequestsController::new(mock_response_handler, mock_responses_parser);
+
+        let request = SentRequest::new(
+            None, operation, instruction_code, RelativeMillis::new(rng.next_u32()));
+
+        let mock_response_parser = MockResponseParser::new(
+            MockResponsePreParseResult {
+                operation: operation,
+                instruction: DataInstructionCodes::Id(0),
+                request_id: None,
+                needs_cache: false,
+                error_code: ErrorCode::Ok,
+                data: parsed_data.to_vec(),
+            }, parsed_data.to_vec() );
+
+        tested.add_sent_request(request);
+        *tested.response_body_parser.request_needs_cache_param.borrow_mut() = None;
+
+        tested.process_response(operation_code, &data);
+
+        assert_eq!(Some(operation_code), *tested.response_body_parser.parse_operation_param.borrow());
+        assert_eq!(Some(request), tested.response_handler.on_request_success_params);
+        //nothing else should be called
+        assert_eq!(None, *tested.response_body_parser.parse_id_param.borrow());
+        assert_eq!(None, tested.response_handler.on_request_process_error_params);
+        assert_eq!(None, tested.response_handler.on_request_response_params);
+        assert_eq!(None, tested.response_handler.on_request_error_params);
+        assert_eq!(None, *tested.response_body_parser.parse_response_params.borrow());
+        assert_eq!(None, *tested.response_body_parser.request_needs_cache_param.borrow());
+        assert_eq!(None, tested.response_handler.on_request_search_error_params);
+    }
+
+    #[test]
+    fn test_process_response_v2_should_inform_set_if_set_request_found() {
+        let mut rng = rand::thread_rng();
+        let operation_code = rng.gen_range(1..u8::MAX);
+        let operation = Operation::Set;
+        let instruction_code = ADD_DATA_INSTRUCTION_CODES[
+            rng.gen_range(0..ADD_DATA_INSTRUCTION_CODES.len() as usize)];
+        let mut data: Vec<u8> = Vec::new();
+        data.push(instruction_code as u8);
+        for i in 1..8 {
+            data.push(rng.gen_range(1..u8::MAX));
+        }
+        let data = data.as_slice();
+        let id: u32 = rng.next_u32();
+
+        let parsed_data = [rng.gen(), rng.gen()];
+
+        let mock_responses_parser = MockResponseBodyParser::new(
+            || Err(Errors::NotEnoughDataGot), false,
+            Ok(Some(id))
+        );
+        let mock_response_handler = MockResponsesHandler::new();
+
+        let mock_response_parser = MockResponseParser::new(
+            MockResponsePreParseResult {
+                operation: operation,
+                instruction: DataInstructionCodes::Id(0),
+                request_id: None,
+                needs_cache: false,
+                error_code: ErrorCode::Ok,
+                data: parsed_data.to_vec(),
+            }, parsed_data.to_vec() );
+
+        let mut tested =
+            RequestsController::new(mock_response_handler, mock_responses_parser, Version::V2);
+
+        let request = SentRequest::new(
+            Some(id), operation, instruction_code, RelativeMillis::new(rng.next_u32()));
+
+        tested.add_sent_request(request);
+        *tested.response_body_parser.request_needs_cache_param.borrow_mut() = None;
+
+        tested.process_response(operation_code, &data);
+
+        assert_eq!(Some(data[1..].to_vec()), *tested.response_body_parser.parse_id_param.borrow());
+        assert_eq!(Some(operation_code), *tested.response_body_parser.parse_operation_param.borrow());
+        assert_eq!(Some(request), tested.response_handler.on_request_success_params);
+        //nothing else should be called
+        assert_eq!(None, tested.response_handler.on_request_process_error_params);
+        assert_eq!(None, tested.response_handler.on_request_response_params);
+        assert_eq!(None, tested.response_handler.on_request_error_params);
+        assert_eq!(None, *tested.response_body_parser.parse_response_params.borrow());
+        assert_eq!(None, *tested.response_body_parser.request_needs_cache_param.borrow());
+        assert_eq!(None, tested.response_handler.on_request_search_error_params);
+    }
+
+    #[test]
+    fn test_process_response_v1_should_proxy_response_if_read_request_found() {
+        let mut rng = rand::thread_rng();
+        let operation_code = rng.gen_range(1..u8::MAX);
+        let operation = Operation::Read;
+        let instruction_code = ADD_DATA_INSTRUCTION_CODES[
+            rng.gen_range(0..ADD_DATA_INSTRUCTION_CODES.len() as usize)];
+        let data = [instruction_code as u8, rng.gen_range(1..u8::MAX),
+            rng.gen_range(1..u8::MAX), rng.gen_range(1..u8::MAX)];
+
+
+        let parse_response_result_producer = || Ok(DataInstructions::Id(Conversation::Data(123)));
+
+        let mock_responses_parser = MockResponseBodyParser::new(
+            parse_response_result_producer, false, Err(Errors::NotEnoughDataGot),
+            Version::V1
+        );
+        let mock_response_handler = MockResponsesHandler::new();
+
+        let mut tested =
+            RequestsController::new(mock_response_handler, mock_responses_parser);
+
+        let request = SentRequest::new(
+            None, operation, instruction_code, RelativeMillis::new(rng.next_u32()));
+
+        let mock_response_parser = MockResponseParser::new(
+            MockResponsePreParseResult {
+                operation: operation,
+                instruction: DataInstructionCodes::Id(0),
+                request_id: None,
+                needs_cache: false,
+                error_code: ErrorCode::Ok,
+                data: parsed_data.to_vec(),
+            }, parsed_data.to_vec() );
+
+        tested.add_sent_request(request);
+        *tested.response_body_parser.request_needs_cache_param.borrow_mut() = None;
+
+        tested.process_response(operation_code, &data);
+
+        assert_eq!(Some(operation_code), *tested.response_body_parser.parse_operation_param.borrow());
+        assert_eq!(Some(instruction_code), *tested.response_body_parser.request_needs_cache_param.borrow());
+        assert_eq!(Some((instruction_code as u8, data[1..].to_vec())), *tested.response_body_parser.parse_response_params.borrow());
+        let response = parse_response_result_producer().unwrap();
+        assert_eq!(Some((request, response)), tested.response_handler.on_request_response_params);
+        //nothing else should be called
+        assert_eq!(None, *tested.response_body_parser.parse_id_param.borrow());
+        assert_eq!(None, tested.response_handler.on_request_process_error_params);
+        assert_eq!(None, tested.response_handler.on_request_success_params);
+        assert_eq!(None, tested.response_handler.on_request_error_params);
+        assert_eq!(None, tested.response_handler.on_request_search_error_params);
+    }
+
+    #[test]
+    fn test_process_response_v2_should_proxy_response_if_read_request_found() {
+        let mut rng = rand::thread_rng();
+        let operation_code = rng.gen_range(1..u8::MAX);
+        let operation = Operation::Read;
+        let instruction_code = ADD_DATA_INSTRUCTION_CODES[
+            rng.gen_range(0..ADD_DATA_INSTRUCTION_CODES.len() as usize)];
+        let mut data: Vec<u8> = Vec::new();
+        data.push(instruction_code as u8);
+        for i in 1..8 {
+            data.push(rng.gen_range(1..u8::MAX));
+        }
+        let data = data.as_slice();
+        let id: u32 = rng.next_u32();
+
+        let parsed_data = [rng.gen(), rng.gen()];
+
+        let parse_response_result_producer = || Ok(DataInstructions::Id(Conversation::Data(123)));
+
+        let mock_responses_parser = MockResponseBodyParser::new(
+            parse_response_result_producer, false, Ok(Some(id)) );
+        let mock_response_handler = MockResponsesHandler::new();
+
+        let mock_response_parser = MockResponseParser::new(
+            MockResponsePreParseResult {
+                operation: operation,
+                instruction: DataInstructionCodes::Id(0),
+                request_id: None,
+                needs_cache: false,
+                error_code: ErrorCode::Ok,
+                data: parsed_data.to_vec(),
+            }, parsed_data.to_vec() );
+
+        let mut tested =
+            RequestsController::new(mock_response_handler, mock_responses_parser, Version::V2);
+
+        let request = SentRequest::new(
+            Some(id), operation, instruction_code, RelativeMillis::new(rng.next_u32()));
+
+        tested.add_sent_request(request);
+        *tested.response_body_parser.request_needs_cache_param.borrow_mut() = None;
+
+        tested.process_response(operation_code, &data);
+
+        assert_eq!(Some(data[1..].to_vec()), *tested.response_body_parser.parse_id_param.borrow());
+        assert_eq!(Some(operation_code), *tested.response_body_parser.parse_operation_param.borrow());
+        assert_eq!(Some(instruction_code), *tested.response_body_parser.request_needs_cache_param.borrow());
+        assert_eq!(Some((instruction_code as u8, data[5..].to_vec())), *tested.response_body_parser.parse_response_params.borrow());
+        let response = parse_response_result_producer().unwrap();
+        assert_eq!(Some((request, response)), tested.response_handler.on_request_response_params);
+        //nothing else should be called
+        assert_eq!(None, tested.response_handler.on_request_process_error_params);
+        assert_eq!(None, tested.response_handler.on_request_success_params);
+        assert_eq!(None, tested.response_handler.on_request_error_params);
+        assert_eq!(None, tested.response_handler.on_request_search_error_params);
+    }
+
+    #[test]
+    fn test_process_response_v1_should_proxy_response_parse_error_if_read_request_found() {
+        let mut rng = rand::thread_rng();
+        let operation_code = rng.gen_range(1..u8::MAX);
+        let operation = Operation::Read;
+        let instruction_code = ADD_DATA_INSTRUCTION_CODES[
+            rng.gen_range(0..ADD_DATA_INSTRUCTION_CODES.len() as usize)];
+        let data = [instruction_code as u8, rng.gen_range(1..u8::MAX),
+            rng.gen_range(1..u8::MAX), rng.gen_range(1..u8::MAX)];
+
+
+        let parse_response_result_producer = || Err(Errors::NotEnoughDataGot);
+
+        let mock_responses_parser = MockResponseBodyParser::new(
+            parse_response_result_producer, false,
+            Err(Errors::NotEnoughDataGot), Version::V1
+        );
+        let mock_response_handler = MockResponsesHandler::new();
+
+        let mock_response_parser = MockResponseParser::new(
+            MockResponsePreParseResult {
+                operation: operation,
+                instruction: DataInstructionCodes::Id(0),
+                request_id: None,
+                needs_cache: false,
+                error_code: ErrorCode::Ok,
+                data: parsed_data.to_vec(),
+            }, parsed_data.to_vec() );
+
+        let mut tested =
+            RequestsController::new(mock_response_handler, mock_responses_parser);
+
+        let request = SentRequest::new(
+            None, operation, instruction_code, RelativeMillis::new(rng.next_u32()));
+
+        tested.add_sent_request(request);
+        *tested.response_body_parser.request_needs_cache_param.borrow_mut() = None;
+
+        tested.process_response(operation_code, &data);
+
+        assert_eq!(Some(operation_code), *tested.response_body_parser.parse_operation_param.borrow());
+        assert_eq!(Some(instruction_code), *tested.response_body_parser.request_needs_cache_param.borrow());
+        assert_eq!(Some((instruction_code as u8, data[1..].to_vec())), *tested.response_body_parser.parse_response_params.borrow());
+        let response = parse_response_result_producer().unwrap_err();
+        assert_eq!(Some((request, response, data[1..].to_vec())), tested.response_handler.on_request_process_error_params);
+        //nothing else should be called
+        assert_eq!(None, *tested.response_body_parser.parse_id_param.borrow());
+        assert_eq!(None, tested.response_handler.on_request_success_params);
+        assert_eq!(None, tested.response_handler.on_request_response_params);
+        assert_eq!(None, tested.response_handler.on_request_error_params);
+        assert_eq!(None, tested.response_handler.on_request_search_error_params);
+    }
+
+    #[test]
+    fn test_process_response_v2_should_proxy_response_parse_error_if_read_request_found() {
+        let mut rng = rand::thread_rng();
+        let operation_code = rng.gen_range(1..u8::MAX);
+        let operation = Operation::Read;
+        let instruction_code = ADD_DATA_INSTRUCTION_CODES[
+            rng.gen_range(0..ADD_DATA_INSTRUCTION_CODES.len() as usize)];
+        let mut data: Vec<u8> = Vec::new();
+        data.push(instruction_code as u8);
+        for i in 1..8 {
+            data.push(rng.gen_range(1..u8::MAX));
+        }
+        let data = data.as_slice();
+        let id: u32 = rng.next_u32();
+
+        let parse_response_result_producer = || Err(Errors::NotEnoughDataGot);
+
+        let parsed_data = [rng.gen(), rng.gen()];
+
+        let mock_responses_parser = MockResponseBodyParser::new(
+            parse_response_result_producer, false, Ok(Some(id)) );
+        let mock_response_handler = MockResponsesHandler::new();
+
+        let mock_response_parser = MockResponseParser::new(
+            MockResponsePreParseResult {
+                operation: operation,
+                instruction: DataInstructionCodes::Id(0),
+                request_id: None,
+                needs_cache: false,
+                error_code: ErrorCode::Ok,
+                data: parsed_data.to_vec(),
+            }, parsed_data.to_vec() );
+
+        let mut tested =
+            RequestsController::new(mock_response_handler, mock_responses_parser, Version::V2);
+
+        let request = SentRequest::new(
+            Some(id), operation, instruction_code, RelativeMillis::new(rng.next_u32()));
+
+        tested.add_sent_request(request);
+        *tested.response_body_parser.request_needs_cache_param.borrow_mut() = None;
+
+        tested.process_response(operation_code, &data);
+
+        assert_eq!(Some(data[1..].to_vec()), *tested.response_body_parser.parse_id_param.borrow());
+        assert_eq!(Some(operation_code), *tested.response_body_parser.parse_operation_param.borrow());
+        assert_eq!(Some(instruction_code), *tested.response_body_parser.request_needs_cache_param.borrow());
+        assert_eq!(Some((instruction_code as u8, data[5..].to_vec())), *tested.response_body_parser.parse_response_params.borrow());
+        let response = parse_response_result_producer().unwrap_err();
+        assert_eq!(Some((request, response, data[5..].to_vec())), tested.response_handler.on_request_process_error_params);
+        //nothing else should be called
+        assert_eq!(None, tested.response_handler.on_request_success_params);
+        assert_eq!(None, tested.response_handler.on_request_response_params);
+        assert_eq!(None, tested.response_handler.on_request_error_params);
+        assert_eq!(None, tested.response_handler.on_request_search_error_params);
+    }
+
+
+    #[test]
+    fn test_process_response_v1_should_proxy_response_error() {
+        let mut rng = rand::thread_rng();
+        let operation_code = rng.gen_range(1..u8::MAX);
+        let operation = Operation::Error;
+        let instruction_code = ADD_DATA_INSTRUCTION_CODES[
+            rng.gen_range(0..ADD_DATA_INSTRUCTION_CODES.len() as usize)];
+        let error_code = ALL_ERROR_CODES[rng.gen_range(1..ALL_ERROR_CODES.len() as usize)];
+        let data = [instruction_code as u8, rng.gen_range(1..u8::MAX),
+            rng.gen_range(1..u8::MAX), rng.gen_range(1..u8::MAX)];
+
+        let parse_response_result_producer = || Err(Errors::NotEnoughDataGot);
+
+        let mock_responses_parser = MockResponseBodyParser::new(
+            parse_response_result_producer, false,
+            Err(Errors::NotEnoughDataGot), Version::V1
+        );
+        let mock_response_handler = MockResponsesHandler::new();
+
+        let mock_response_parser = MockResponseParser::new(
+            MockResponsePreParseResult {
+                operation: operation,
+                instruction: DataInstructionCodes::Id(0),
+                request_id: None,
+                needs_cache: false,
+                error_code: ErrorCode::Ok,
+                data: parsed_data.to_vec(),
+            }, parsed_data.to_vec() );
+
+        let mut tested =
+            RequestsController::new(mock_response_handler, mock_responses_parser);
+
+        let request = SentRequest::new(
+            None, operation, instruction_code, RelativeMillis::new(rng.next_u32()));
+
+        tested.add_sent_request(request);
+        *tested.response_body_parser.request_needs_cache_param.borrow_mut() = None;
+
+        tested.process_response(operation_code, &data);
+
+        assert_eq!(Some(operation_code), *tested.response_body_parser.parse_operation_param.borrow());
+        assert_eq!(Some(instruction_code), *tested.response_body_parser.request_needs_cache_param.borrow());
+        assert_eq!(Some((request, ErrorCode::for_code(error_code.discriminant()))),
+               tested.response_handler.on_request_error_params);
+        //nothing else should be called
+        assert_eq!(None, *tested.response_body_parser.parse_id_param.borrow());
+        assert_eq!(None, tested.response_handler.on_request_success_params);
+        assert_eq!(None, tested.response_handler.on_request_response_params);
+        assert_eq!(None, *tested.response_body_parser.parse_response_params.borrow());
+        assert_eq!(None, tested.response_handler.on_request_process_error_params);
+        assert_eq!(None, tested.response_handler.on_request_search_error_params);
+    }
+
+    #[test]
+    fn test_process_response_v2_should_proxy_response_error() {
+        let mut rng = rand::thread_rng();
+        let operation_code = rng.gen_range(1..u8::MAX);
+        let operation = Operation::Error;
+        let instruction_code = ADD_DATA_INSTRUCTION_CODES[
+            rng.gen_range(0..ADD_DATA_INSTRUCTION_CODES.len() as usize)];
+        let mut data: Vec<u8> = Vec::new();
+        data.push(instruction_code as u8);
+        for i in 1..8 {
+            data.push(rng.gen_range(1..u8::MAX));
+        }
+        let data = data.as_slice();
+        let id: u32 = rng.next_u32();
+
+        let parse_response_result_producer = || Err(Errors::NotEnoughDataGot);
+
+        let parsed_data = [1_u8];
+
+        let mock_responses_parser = MockResponseBodyParser::new(
+            parse_response_result_producer, false, Ok(Some(id))
+        );
+        let mock_response_handler = MockResponsesHandler::new();
+
+        let mock_response_parser = MockResponseParser::new(
+            MockResponsePreParseResult {
+                operation: operation,
+                instruction: DataInstructionCodes::Id(0),
+                request_id: None,
+                needs_cache: false,
+                error_code: ErrorCode::Ok,
+                data: parsed_data.to_vec(),
+            }, parsed_data.to_vec() );
+
+        let mut tested =
+            RequestsController::new(mock_response_handler, mock_responses_parser, Version::V2);
+
+        let request = SentRequest::new(
+            Some(id), operation, instruction_code, RelativeMillis::new(rng.next_u32()));
+
+        tested.add_sent_request(request);
+        *tested.response_body_parser.request_needs_cache_param.borrow_mut() = None;
+
+        tested.process_response(operation_code, &data);
+
+        assert_eq!(Some(data[1..].to_vec()), *tested.response_body_parser.parse_id_param.borrow());
+        assert_eq!(Some(operation_code), *tested.response_body_parser.parse_operation_param.borrow());
+        assert_eq!(Some(instruction_code), *tested.response_body_parser.request_needs_cache_param.borrow());
+        assert_eq!(Some((instruction_code as u8, data[5..].to_vec())), *tested.response_body_parser.parse_response_params.borrow());
+        let response = parse_response_result_producer().unwrap_err();
+        assert_eq!(Some((request, response, data[5..].to_vec())), tested.response_handler.on_request_process_error_params);
+        //nothing else should be called
+        assert_eq!(None, tested.response_handler.on_request_success_params);
+        assert_eq!(None, tested.response_handler.on_request_response_params);
+        assert_eq!(None, tested.response_handler.on_request_error_params);
+        assert_eq!(None, tested.response_handler.on_request_search_error_params);
+    }
+*/
+
+
+    const ALL_ERROR_CODES: [ErrorCode; 16] = [
+        ErrorCode::OK,
+        ErrorCode::ERequestDataNoValue,
+        ErrorCode::EInstructionUnrecognized,
+        ErrorCode::ECommandEmpty,
+        ErrorCode::ECommandSizeOverflow,
+        ErrorCode::EInstructionWrongStart,
+        ErrorCode::EWriteMaxAttemptsExceeded,
+        ErrorCode::EUndefinedOperation,
+        ErrorCode::ERelayCountOverflow,
+        ErrorCode::ERelayCountAndDataMismatch,
+        ErrorCode::ERelayIndexOutOfRange,
+        ErrorCode::ESwitchCountMaxValueOverflow,
+        ErrorCode::EControlInterruptedPinNotAllowedValue,
+        ErrorCode::EInternalError,
+        ErrorCode::ERelayNotAllowedPinUsed,
+        ErrorCode::EUndefinedCode(128),
+    ];
 
     const ADD_DATA_INSTRUCTION_CODES: [DataInstructionCodes; 22] = [
         DataInstructionCodes::None,
@@ -457,106 +1134,193 @@ mod tests {
         DataInstructionCodes::Last,
         DataInstructionCodes::Unknown, ];
 
-    struct MockResponsesHandler {
 
+    const ALL_ERRORS: [Errors; 25] = [
+        Errors::NoBufferAvailable,
+        Errors::TransferInProgress,
+        Errors::DmaBufferOverflow,
+        Errors::CommandDataCorrupted,
+        Errors::NotEnoughDataGot,
+        Errors::OperationNotRecognized(128),
+        Errors::InstructionNotRecognized(129),
+        Errors::DataCorrupted,
+        Errors::DmaError(DMAError::NotReady(())),
+        Errors::RequestsLimitReached,
+        Errors::RequestsNeedsCacheAlreadySent,
+        Errors::NoRequestsFound,
+        Errors::UndefinedOperation,
+        Errors::SentRequestsQueueIsEmpty,
+        Errors::RelayIndexOutOfRange,
+        Errors::RelayCountOverflow,
+        Errors::SlaveControllersInstancesMaxCountReached,
+        Errors::FromAfterTo,
+        Errors::OutOfRange,
+        Errors::SwitchesDataCountOverflow,
+        Errors::InvalidDataSize,
+        Errors::InstructionNotSerializable,
+        Errors::WrongStateNotParsed,
+        Errors::WrongStateIncompatibleOperation(Operation::Command),
+        Errors::WrongIncomingOperation(Operation::Command),
+    ];
+
+    struct MockResponsesHandler <'a, BP: ResponseBodyParser> {
+        on_request_success_params: Option<SentRequest>,
+        on_request_error_params: Option<(SentRequest, ErrorCode)>,
+        on_request_parse_error_params: Option<(Option<SentRequest>, Errors, Vec<u8>)>,
+        on_request_response_params: Option<(SentRequest, DataInstructions)>,
+        on_request_search_error_params: Option<(ResponsePayloadParsed<'a, BP>, Errors)>,
     }
 
-    impl MockResponsesHandler {
+    impl <'a, BP: ResponseBodyParser> MockResponsesHandler<'a, BP> {
         pub fn new() -> Self {
             Self {
-
+                on_request_success_params: None,
+                on_request_error_params: None,
+                on_request_parse_error_params: None,
+                on_request_response_params: None,
+                on_request_search_error_params: None,
             }
         }
     }
 
-    impl ResponseHandler for MockResponsesHandler {
+    impl <'a, BP: ResponseBodyParser> ResponseHandler<BP> for MockResponsesHandler<'a, BP> {
         fn on_request_success(&mut self, request: SentRequest) {
-
+            self.on_request_success_params = Some(request);
         }
 
         fn on_request_error(&mut self, request: SentRequest, error_code: ErrorCode) {
-
+            self.on_request_error_params = Some((request, error_code));
         }
 
-        fn on_request_process_error(&mut self, request: SentRequest, error: Errors, data: &[u8]) {
-
+        fn on_request_parse_error(&mut self, request: Option<SentRequest>, error: Errors, data: &[u8]) {
+            self.on_request_parse_error_params = Some((request, error, data.to_vec()));
         }
 
         fn on_request_response(&mut self, request: SentRequest, response: DataInstructions) {
-
+            self.on_request_response_params = Some((request, response));
         }
 
-        fn on_request_search_error(&mut self, operation: Operation, instruction: u8, id: Option<u32>, error: Errors, data: &[u8]) {
-
+        fn on_request_search_error(&mut self, payload: ResponsePayloadParsed<BP>, error: Errors) {
+            self.on_request_search_error_params = Some((payload, error));
         }
     }
 
-    fn new_parse_response<F>(parse_response_cb: F) -> MockResponsesParser<F, fn(DataInstructionCodes) -> bool, fn(u8, &[u8]) -> (Operation, Option<u32>, &[u8])>
-        where
-            F: Fn(u8, &[u8]) -> Result<DataInstructions, Errors>,
-    {
-        MockResponsesParser::new(parse_response_cb, |_| unimplemented!(), |_, _| unimplemented!(), false)
+    static parsed_data_fake: [u8; 1] = [1_u8];
+
+    fn new_check_needs_cache<CB: Fn() -> Result<DataInstructions, Errors>>(request_needs_cache_result: bool, slave_controller_version_result: Version) -> MockResponseBodyParser<CB> {
+        MockResponseBodyParser::new(|| Err(Errors::NoRequestsFound),
+            request_needs_cache_result, Ok(Some(0)), slave_controller_version_result)
     }
 
-    fn new_check_needs_cache<F>(request_needs_cache_cb: F) -> MockResponsesParser<fn(u8, &[u8]) -> Result<DataInstructions, Errors>, F, fn(u8, &[u8]) -> (Operation, Option<u32>, &[u8])>
-        where
-            F: Fn(DataInstructionCodes) -> bool,
-    {
-        MockResponsesParser::new(|_, _| unimplemented!(), request_needs_cache_cb, |_, _| unimplemented!(), false)
+    fn default_mock_parser<CB: Fn() -> Result<DataInstructions, Errors>>(slave_controller_version_result: Version) -> MockResponseBodyParser<CB> {
+        MockResponseBodyParser::new(|| Err(Errors::NoRequestsFound),
+            false, Ok(Some(0)), slave_controller_version_result)
     }
 
-    fn default() -> MockResponsesParser<fn(u8, &[u8]) -> Result<DataInstructions, Errors>, fn(DataInstructionCodes) -> bool, fn(u8, &[u8]) -> (Operation, Option<u32>, &[u8])> {
-        MockResponsesParser::new(|_, _| unimplemented!(), |_| unimplemented!(), |_, _| unimplemented!(), false)
+    struct MockResponseBodyParser<'a, CB: Fn() -> Result<DataInstructions, Errors>> {
+        parse_response_params: RefCell<Option<(u8, Vec<u8>)>>,
+        parse_response_result_producer: CB,
+        request_needs_cache_param: RefCell<Option<DataInstructionCodes>>,
+        request_needs_cache_result: bool,
+        parse_id_param: RefCell<Option<Vec<u8>>>,
+        parse_id_result: Result<(Option<u32>, &'a [u8]), Errors>,
+        slave_controller_version_result: Version,
     }
 
-    struct MockResponsesParser<F1, F2, F3>
-        where
-            F1: Fn(u8, &[u8]) -> Result<DataInstructions, Errors>,
-            F2: Fn(DataInstructionCodes) -> bool,
-            F3: Fn(u8, &[u8]) -> (Operation, Option<u32>, &[u8]),
-    {
-        parse_response_cb: F1,
-        request_needs_cache_cb: F2,
-        parse_operation_cb: F3,
-        is_response_param: RefCell<Option<u8>>,
-        is_response_result: bool,
-    }
-
-    impl <F1, F2, F3>  MockResponsesParser<F1, F2, F3>
-        where
-            F1: Fn(u8, &[u8]) -> Result<DataInstructions, Errors> ,
-            F2: Fn(DataInstructionCodes) -> bool,
-            F3: Fn(u8, &[u8]) -> (Operation, Option<u32>, &[u8]),
-    {
-        pub fn new<>(parse_response_cb: F1, request_needs_cache_cb: F2, parse_operation_cb: F3, is_response_result: bool) -> Self {
+    impl <'a, CB: Fn() -> Result<DataInstructions, Errors>> MockResponseBodyParser<'a, CB> {
+        pub fn new(
+            parse_response_result_producer: CB, request_needs_cache_result: bool,
+            parse_id_result: Result<(Option<u32>, &[u8]), Errors>, slave_controller_version_result: Version,
+        ) -> Self {
             Self {
-                parse_response_cb,
-                request_needs_cache_cb,
-                parse_operation_cb,
-                is_response_param: RefCell::new(None),
-                is_response_result,
+                parse_response_params: RefCell::new(None),
+                parse_response_result_producer,
+                request_needs_cache_param: RefCell::new(None),
+                request_needs_cache_result,
+                parse_id_param: RefCell::new(None),
+                parse_id_result,
+                slave_controller_version_result,
+            }
+        }
+
+        pub fn new_need_cache(request_needs_cache_result: bool) -> Self {
+            let mut rng = rand::thread_rng();
+            let version = if rng.gen_range(0..2) == 0 { Version::V1 } else { Version::V2 };
+            let error = ALL_ERRORS[rng.gen_range(0..ALL_ERRORS.len() as usize)];
+            Self::new (||error, false,
+                 Ok(Some(rng.gen_range(1..u32::MAX))), version)
+        }
+    }
+
+    impl <CB: Fn() -> Result<DataInstructions, Errors>> ResponseBodyParser for MockResponseBodyParser<CB> {
+
+        fn request_needs_cache(&self, instruction: DataInstructionCodes) -> bool {
+            *self.request_needs_cache_param.borrow_mut() = Some(instruction);
+            self.request_needs_cache_result
+        }
+
+        fn parse_id(&self, data: &[u8]) -> Result<(Option<u32>, &[u8]), Errors> {
+            *self.parse_id_param.borrow_mut() = Some(data.to_vec());
+            self.parse_id_result
+        }
+
+        fn parse(&self, instruction: DataInstructionCodes, data: &[u8]) -> Result<DataInstructions, Errors> {
+            *self.parse_response_params.borrow_mut() = Some((instruction as u8, data.to_vec()));
+            (self.parse_response_result_producer)()
+        }
+
+        fn slave_controller_version(&self) -> Version {
+            self.slave_controller_version_result
+        }
+
+    }
+
+    struct MockResponsePreParseResult {
+        operation: Operation,
+        instruction: DataInstructionCodes,
+        request_id: Option<u32>,
+        needs_cache: bool,
+        error_code: ErrorCode,
+        data: Vec<u8>,
+    }
+
+    struct MockResponseParser<CB: Fn() -> Result<DataInstructions, Errors>> {
+        parse_result: Result<MockResponsePreParseResult, Errors>,
+        check_parse_param: Option<fn (&MockResponseBodyParser<CB>)>,
+        data_result: Vec<u8>,
+    }
+
+    impl <CB: Fn() -> Result<DataInstructions, Errors>> MockResponseParser<CB> {
+        fn new(parse_result: Result<MockResponsePreParseResult, Errors>, data_result: Vec<u8>) -> Self {
+            Self {
+                parse_result,
+                check_parse_param: None,
+                data_result,
+            }
+        }
+        fn new_pp_checker(parse_result: Result<MockResponsePreParseResult, Errors>, data_result: Vec<u8>,
+               check_parse_param: Option<fn (&MockResponseBodyParser<CB>)>) -> Self {
+            Self {
+                parse_result,
+                check_parse_param,
+                data_result,
             }
         }
     }
 
-    impl <F1, F2, F3> ResponsesParser for MockResponsesParser<F1, F2, F3>
-        where
-            F1: Fn(u8, &[u8]) -> Result<DataInstructions, Errors> ,
-            F2: Fn(DataInstructionCodes) -> bool,
-            F3: Fn(u8, &[u8]) -> (Operation, Option<u32>, &[u8]),
-    {
-        fn parse_response(&self, instruction_code: u8, data: &[u8]) -> Result<DataInstructions, Errors> {
-            (self.parse_response_cb)(instruction_code, data)
+    impl <CB: Fn() -> Result<DataInstructions, Errors>>  ResponseParser<MockResponseBodyParser<CB>> for MockResponseParser<CB> {
+        fn parse(&self, body_parser: &MockResponseBodyParser<CB>) -> Result<ResponsePayloadParsed<MockResponseBodyParser<CB>>, Errors> {
+            if let Some(check_parse_param) = self.check_parse_param {
+                check_parse_param(body_parser);
+            }
+            self.parse_result.map(|res| {
+                ResponsePayloadParsed::new(res.operation, res.instruction, res.request_id,
+                    res.needs_cache, res.error_code, body_parser, res.data.as_slice())
+            })
         }
-        fn request_needs_cache(&self, instruction: DataInstructionCodes) -> bool {
-            (self.request_needs_cache_cb)(instruction)
-        }
-        fn parse_operation<'a>(&self, operation_code: u8, data: &'a [u8]) -> (Operation, Option<u32>, &'a [u8]) {
-            (self.parse_operation_cb)(operation_code, data)
-        }
-        fn is_response(&self, operation_code: u8) -> bool {
-            *self.is_response_param.borrow_mut() = Some(operation_code);
-            self.is_response_result
+
+        fn data(&self) -> &[u8] {
+            self.data_result.as_slice()
         }
     }
 }

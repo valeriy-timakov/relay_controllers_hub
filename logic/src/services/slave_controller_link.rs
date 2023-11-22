@@ -1,6 +1,6 @@
 #![allow(unsafe_code)]
 
-mod domain;
+pub mod domain;
 mod parsers;
 mod requests_controller;
 mod signals_controller;
@@ -13,7 +13,7 @@ use crate::services::slave_controller_link::domain::{*};
 use crate::errors::Errors;
 use crate::hal_ext::rtc_wrapper::{RelativeMillis, RelativeSeconds };
 use crate::hal_ext::serial_transfer::{ ReadableBuffer, Receiver, RxTransfer, RxTransferProxy, Sender, SerialTransfer, TxTransfer, TxTransferProxy};
-use crate::services::slave_controller_link::parsers::{ResponsesParser, RequestsParserImpl, SignalsParser, SignalsParserImpl};
+use crate::services::slave_controller_link::parsers::{PayloadParserImpl, ResponseBodyParserImpl, ResponseParser, ResponsePayload, SignalPayload};
 use crate::services::slave_controller_link::receiver_from_slave::ReceiverFromSlaveController;
 use crate::utils::dma_read_buffer::BufferWriter;
 use crate::services::slave_controller_link::requests_controller::{RequestsController, RequestsControllerRx, RequestsControllerTx, ResponseHandler, SentRequest};
@@ -23,43 +23,48 @@ use crate::services::slave_controller_link::receiver_from_slave::ReceiverFromSla
 
 
 
-pub struct SlaveControllerLink<T, R, TxBuff, RxBuff, SH, RH, EH>
+pub struct SlaveControllerLink<'a, T, R, TxBuff, RxBuff, SH, RH, EH>
     where
         TxBuff: ReadBuffer + BufferWriter,
         RxBuff: WriteBuffer + ReadableBuffer,
         T: TxTransferProxy<TxBuff>,
         R: RxTransferProxy<RxBuff>,
         SH: SignalsHandler,
-        RH: ResponseHandler,
+        RH: ResponseHandler<ResponseBodyParserImpl>,
         EH: Fn(Errors),
 {
     tx: TransmitterToSlaveController<TxBuff, TxTransfer<T, TxBuff>>,
-    rx: ReceiverFromSlaveController<RxTransfer<R, RxBuff>, SignalControllerImpl<SH, SignalsParserImpl>, RequestsController<RH, RequestsParserImpl>, EH>,
+    rx: ReceiverFromSlaveController<'a,
+        RxTransfer<R, RxBuff>, SignalControllerImpl<SH>, RequestsController<RH, ResponseBodyParserImpl>,
+        EH, PayloadParserImpl, SignalPayload<'a>, ResponsePayload<'a>, ResponseBodyParserImpl
+    >,
 }
 
 
-impl <T, R, TxBuff, RxBuff, SH, RH, EH> SlaveControllerLink<T, R,TxBuff, RxBuff, SH, RH, EH>
+impl <'a, T, R, TxBuff, RxBuff, SH, RH, EH> SlaveControllerLink<'a, T, R,TxBuff, RxBuff, SH, RH, EH>
     where
         TxBuff: ReadBuffer + BufferWriter,
         RxBuff: WriteBuffer + ReadableBuffer,
         T: TxTransferProxy<TxBuff>,
         R: RxTransferProxy<RxBuff>,
         SH: SignalsHandler,
-        RH: ResponseHandler,
+        RH: ResponseHandler<ResponseBodyParserImpl>,
         EH: Fn(Errors),
 {
     pub fn create(serial_transfer: SerialTransfer<T, R, TxBuff, RxBuff>, signals_handler: SH,
                   responses_handler: RH, receive_error_handler: EH, api_version: Version) -> Result<Self, Errors>
     {
         let (tx, rx) = serial_transfer.into();
-        let requests_parser = RequestsParserImpl::create()?;
-        let requests_controller = RequestsController::new(responses_handler, requests_parser, api_version);
-        let signals_parser = SignalsParserImpl::new();
-        let signals_controller = SignalControllerImpl::new(signals_handler, signals_parser);
+        let response_body_parser = ResponseBodyParserImpl::create(api_version)?;
+        let requests_controller = RequestsController::new(responses_handler, response_body_parser);
+        let signals_controller = SignalControllerImpl::new(signals_handler);
+        let payload_parser = PayloadParserImpl::new();
 
+        let rx = ReceiverFromSlaveController::new(rx, signals_controller,
+                                                          requests_controller, receive_error_handler, payload_parser);
         Ok(Self {
             tx: TransmitterToSlaveController::new(tx),
-            rx: ReceiverFromSlaveController::new(rx, signals_controller, requests_controller, receive_error_handler),
+            rx,
         })
     }
 
@@ -75,7 +80,7 @@ impl <T, R, TxBuff, RxBuff, SH, RH, EH> SlaveControllerLink<T, R,TxBuff, RxBuff,
 
     #[inline(always)]
     pub fn on_tx_dma_interrupts(&mut self) {
-        self.tx.inner().on_dma_interrupts();
+        self.tx.inner_tx().on_dma_interrupts();
     }
 }
 

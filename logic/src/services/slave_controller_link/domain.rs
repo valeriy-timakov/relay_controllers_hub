@@ -39,6 +39,15 @@ pub enum Operation {
     Command,
 }
 
+impl Operation {
+    pub fn is_response(self) -> bool {
+        self == Operation::Set || self == Operation::Read || self == Operation::Error
+    }
+    pub fn is_signal(self) -> bool {
+        self == Operation::Signal 
+    }
+}
+
 #[derive(Copy, Clone, PartialEq, Debug)]
 pub enum Version {
     V1,
@@ -56,6 +65,25 @@ pub enum Signals {
     StateFixTry = 0x19,
     Unknown = 0xff,
 }
+
+impl Signals {
+    pub fn get(signal_code: u8) -> Result<Signals, Errors> {
+        if signal_code == Signals::MonitoringStateChanged as u8 {
+            Ok(Signals::MonitoringStateChanged)
+        } else if signal_code == Signals::StateFixTry as u8 {
+            Ok(Signals::StateFixTry)
+        } else if signal_code == Signals::ControlStateChanged as u8 {
+            Ok(Signals::ControlStateChanged)
+        } else if signal_code == Signals::RelayStateChanged as u8 {
+            Ok(Signals::RelayStateChanged)
+        } else if signal_code == Signals::GetTimeStamp as u8 {
+            Ok(Signals::GetTimeStamp)
+        } else {
+            Err(Errors::InstructionNotRecognized(signal_code))
+        }
+    }    
+}
+
 
 pub enum Commands {
     ClearSwitchCount = 0x08,

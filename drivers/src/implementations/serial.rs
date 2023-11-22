@@ -4,10 +4,10 @@ use stm32f4xx_hal::dma::{ChannelX, DMAError, MemoryToPeripheral, PeripheralToMem
 use stm32f4xx_hal::dma::traits::{Channel, DMASet, PeriAddress, Stream};
 use stm32f4xx_hal::serial::{Instance, Rx, RxISR, RxListen, Tx, TxISR};
 use stm32f4xx_hal::dma::config::DmaConfig;
-use crate::hal_ext::serial_transfer::{Decomposable, ReadableBuffer, RxTransferProxy, SerialTransfer, TxTransferProxy};
-use crate::utils::dma_read_buffer::Buffer;
+use logic::hal_ext::serial_transfer::{Decomposable, ReadableBuffer, RxTransferProxy, SerialTransfer, TxTransferProxy};
+use logic::utils::dma_read_buffer::Buffer;
 use core::marker::PhantomData;
-use crate::errors;
+use logic::errors;
 
 
 const BUFFER_SIZE: usize = 256;

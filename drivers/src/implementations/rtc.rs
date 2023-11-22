@@ -1,16 +1,20 @@
 use time::PrimitiveDateTime;
-use crate::hal_ext::rtc_wrapper::Rtc;
+use logic::hal_ext::rtc_wrapper::Rtc;
 
-impl Rtc for stm32f4xx_hal::rtc::Rtc {
+pub  struct RtcWrapper {
+    rtc: stm32f4xx_hal::rtc::Rtc
+}
+
+impl Rtc for RtcWrapper {
     type Error = stm32f4xx_hal::rtc::Error;
 
     #[inline(always)]
     fn get_datetime(&mut self) -> PrimitiveDateTime {
-        self.get_datetime()
+        self.rtc.get_datetime()
     }
 
     #[inline(always)]
     fn set_datetime(&mut self, date: &PrimitiveDateTime) -> Result<(), Self::Error> {
-        self.set_datetime(date)
+        self.rtc.set_datetime(date)
     }
 }

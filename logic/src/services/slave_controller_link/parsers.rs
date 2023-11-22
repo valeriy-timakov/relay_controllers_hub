@@ -2,7 +2,8 @@ use alloc::boxed::Box;
 use core::mem::size_of;
 use crate::errors::Errors;
 use crate::hal_ext::rtc_wrapper::RelativeSeconds;
-use crate::services::slave_controller_link::domain::{AllData, ContactsWaitData, Conversation, Data, DataInstructionCodes, DataInstructions, Extractor, FixDataContainer, Operation, OperationCodes, RelaysSettings, Request, Signals, StateSwitchDatas, Version};
+use crate::services::slave_controller_link::domain::{AllData, ContactsWaitData, Conversation, Data, DataInstructionCodes, DataInstructions, ErrorCode, Extractor, FixDataContainer, Operation, OperationCodes, RelaysSettings, Request, Signals, StateSwitchDatas, Version};
+
 
 
 pub fn init_slave_controllers() {
@@ -113,37 +114,30 @@ fn cache_getter(code: DataInstructionCodes) -> Option< &'static Box<dyn CashedIn
     }
 }
 
-pub trait ResponsesParser {
-    fn parse_response(&self, instruction_code: u8, data: &[u8]) -> Result<DataInstructions, Errors>;
+pub trait ResponseBodyParser {
     fn request_needs_cache(&self, instruction: DataInstructionCodes) -> bool;
-    fn parse_operation<'a>(&self, operation_code: u8, data: &'a [u8]) -> (Operation, Option<u32>, &'a [u8]);
-    fn is_response(&self, operation_code: u8) -> bool;
+    fn parse_id(&self, data: &[u8]) -> Result<(Option<u32>, &[u8]), Errors>;
+    fn parse(&self, instruction: DataInstructionCodes, data: &[u8]) -> Result<DataInstructions, Errors>;
+    fn slave_controller_version(&self) -> Version;
 }
 
-pub struct RequestsParserImpl {
+pub struct ResponseBodyParserImpl {
     static_buffers_idx: usize,
+    slave_controller_version: Version,
 }
 
-impl RequestsParserImpl {
-    pub fn create() -> Result<Self, Errors> {
+impl ResponseBodyParserImpl {
+    pub fn create(slave_controller_version: Version) -> Result<Self, Errors> {
+        let static_buffers_idx = get_next_static_buffer_index()?;
         Ok(Self {
-            static_buffers_idx: get_next_static_buffer_index()?,
+            static_buffers_idx,
+            slave_controller_version,
         })
     }
-
-    fn parse_u32(&self, data: &[u8]) -> Result<u32, Errors> {
-        if data.len() >= 4 {
-            Ok(u32::extract(&data[0..4]))
-        } else {
-            Err(Errors::InvalidDataSize)
-        }
-    }
 }
 
-impl ResponsesParser for RequestsParserImpl {
-    
-    fn parse_response(&self, instruction_code: u8, data: &[u8]) -> Result<DataInstructions, Errors> {
-        let instruction = DataInstructionCodes::get(instruction_code)?;
+impl ResponseBodyParser for ResponseBodyParserImpl {
+    fn parse(&self, instruction: DataInstructionCodes, data: &[u8]) -> Result<DataInstructions, Errors> {
         match cache_getter(instruction) {
             Some(getter) => {
                 let mut cached_instruction = getter.get(self.static_buffers_idx);
@@ -161,43 +155,265 @@ impl ResponsesParser for RequestsParserImpl {
         }
     }
 
-    fn parse_operation<'a>(&self, operation_code: u8, data: &'a [u8]) -> (Operation, Option<u32>, &'a [u8]) {
-        let (operation, version) =
-            if operation_code == OperationCodes::Success as u8 {
-                (Operation::Set, 1)
-            } else if operation_code == OperationCodes::Response as u8 {
-                (Operation::Read, 1)
-            } else if operation_code == OperationCodes::Error as u8 {
-                (Operation::Error, 1)
-            } else if operation_code == OperationCodes::SuccessV2 as u8 {
-                (Operation::Set, 2)
-            } else if operation_code == OperationCodes::ResponseV2 as u8 {
-                (Operation::Read, 2)
-            } else if operation_code == OperationCodes::ErrorV2 as u8 {
-                (Operation::Error, 2)
-            } else {
-                (Operation::None, 0)
-            };
-
-        let (id, data) =
-            if version == 2 {
-                match self.parse_u32(data) {
-                    Ok(id) => (Some(id), &data[4..]),
-                    Err(_) => (None, data)
+    fn parse_id(&self, data: &[u8]) -> Result<(Option<u32>, &[u8]), Errors> {
+        match self.slave_controller_version {
+            Version::V1 => {
+                Ok( (None, data) )
+            },
+            Version::V2 => {
+                if data.len() >= 4 {
+                    let data = if data.len() > 4 { &data[4..] } else { &data[0..0] };
+                    Ok( (Some(u32::extract(&(data)[0..4])), data) )
+                } else {
+                    Err(Errors::NotEnoughDataGot)
                 }
-            } else {
-                (None, data)
-            };
+            },
+        }
+    }
 
-        (operation, id, data)
+
+    fn slave_controller_version(&self) -> Version {
+        self.slave_controller_version
     }
-    
-    fn is_response(&self, operation_code: u8) -> bool {
-        operation_code == OperationCodes::Success as u8 || operation_code == OperationCodes::Response as u8 || operation_code == OperationCodes::Error as u8 ||
-            operation_code == OperationCodes::SuccessV2 as u8 || operation_code == OperationCodes::ResponseV2 as u8 || operation_code == OperationCodes::ErrorV2 as u8
-    }
-    
+
 }
+
+pub enum PayloadParserResult<'a, SP, RP, RBP>
+    where 
+        SP: SignalParser<'a>,
+        RP: ResponseParser<RBP>, 
+        RBP: ResponseBodyParser,
+{
+    ResponsePayload(RP),
+    SignalPayload(SP),
+    _fake(RBP),
+    _fake1(&'a[u8]),
+}
+
+pub struct ResponsePayload<'a> {
+    operation: Operation,
+    data: &'a[u8],
+}
+
+impl <'a> ResponsePayload<'a> {
+    fn new(data: &[u8], operation: Operation) -> Self {
+        Self {
+            data,
+            operation,
+        }
+    }
+}
+
+pub struct SignalPayload<'a> {
+    data: &'a[u8],
+}
+
+impl <'a> SignalPayload<'a> {
+    pub fn new(data: &[u8]) -> Self {
+        Self {
+            data,
+        }
+    }
+}
+
+pub struct ResponsePayloadParsed<'a, BP: ResponseBodyParser> {
+    operation: Operation,
+    instruction: DataInstructionCodes,
+    request_id: Option<u32>,
+    needs_cache: bool,
+    error_code: ErrorCode,
+    body_parser: &'a BP,
+    data: &'a[u8],
+}
+
+impl <'a, BP: ResponseBodyParser> ResponsePayloadParsed<'a, BP> {
+    pub fn new(
+        operation: Operation,
+        instruction: DataInstructionCodes,
+        request_id: Option<u32>,
+        needs_cache: bool,
+        error_code: ErrorCode,
+        body_parser: &'a BP,
+        data: &'a[u8],
+    ) -> Self {
+        Self {
+            operation,
+            instruction,
+            request_id,
+            needs_cache,
+            error_code,
+            body_parser,
+            data,
+        }
+    }
+}
+
+impl <'a, BP: ResponseBodyParser> ResponsePayloadParsed<'a, BP> {
+    pub fn operation(&self) -> Operation {
+        self.operation
+    }
+
+    pub fn instruction(&self) -> DataInstructionCodes {
+        self.instruction
+    }
+
+    pub fn request_id(&self) -> Option<u32> {
+        self.request_id
+    }
+
+    pub fn needs_cache(&self) -> bool {
+        self.needs_cache
+    }
+
+    pub fn error_code(&self) -> ErrorCode {
+        self.error_code
+    }
+
+    pub fn data(&self) -> &'a[u8] {
+        self.data
+    }
+}
+
+#[derive(Copy, Clone, PartialEq, Debug)]
+pub struct SignalParseResult {
+    signal: Signals,
+    relay_signal_data: Option<RelaySignalData>,
+}
+
+impl SignalParseResult {
+    pub fn signal(&self) -> Signals {
+        self.signal
+    }
+
+    pub fn relay_signal_data(&self) -> Option<RelaySignalData> {
+        self.relay_signal_data
+    }
+}
+
+impl SignalParseResult {
+    pub fn new(signal: Signals, relay_signal_data: Option<RelaySignalData>) -> Self {
+        Self {
+            signal,
+            relay_signal_data,
+        }
+    }
+}
+
+pub trait PayloadParser<'a, SP, RP, RBP>
+    where
+        SP: SignalParser<'a>,
+        RP: ResponseParser<RBP>,
+        RBP: ResponseBodyParser, 
+{
+    fn parse(&self, data: &'a[u8]) -> Result<PayloadParserResult<'a, SP, RP, RBP>, Errors>;
+}
+
+pub struct PayloadParserImpl ();
+
+impl PayloadParserImpl {
+    pub fn new() -> Self {
+        Self {}
+    }
+    
+    fn parse_operation(data: &[u8]) -> Result<(Operation, &[u8]), Errors> {
+        let operation_code = data[0];
+        let operation = if operation_code == OperationCodes::Success as u8 {
+            Operation::Set
+        } else if operation_code == OperationCodes::Response as u8 {
+            Operation::Read
+        } else if operation_code == OperationCodes::Error as u8 {
+            Operation::Error
+        } else if operation_code == OperationCodes::SuccessV2 as u8 {
+            Operation::Set
+        } else if operation_code == OperationCodes::ResponseV2 as u8 {
+            Operation::Read
+        } else if operation_code == OperationCodes::ErrorV2 as u8 {
+            Operation::Error
+        } else {
+            Operation::None
+        };
+        let operation_result =
+            if operation != Operation::None { Ok(operation) }
+            else { Err(Errors::OperationNotRecognized(operation_code)) };
+        Ok((operation, &data[1..]))
+    }
+}
+
+impl <'a, RBP: ResponseBodyParser> PayloadParser<'a, SignalPayload<'a>, ResponsePayload<'a>, RBP> for PayloadParserImpl {
+    fn parse(&self, data: &'a [u8]) -> Result<PayloadParserResult<'a, SignalPayload<'a>, ResponsePayload<'a>, RBP>, Errors> {
+        if data.len() < 2 {
+            Err(Errors::NotEnoughDataGot)
+        } else if data[0] != OperationCodes::None as u8 {
+            Err(Errors::CommandDataCorrupted)
+        } else {
+            let (operation, data) = Self::parse_operation(&data[1..])?;
+            if operation.is_response() {
+                Ok(PayloadParserResult::ResponsePayload(ResponsePayload::new(data, operation)))
+            } else if operation.is_signal() {
+                Ok(PayloadParserResult::SignalPayload(SignalPayload::new(data)))
+            } else {
+                Err(Errors::WrongIncomingOperation(operation))
+            }
+        }
+    }
+}
+
+pub trait ResponseParser <BP: ResponseBodyParser> {
+    fn parse(&self, body_parser: &BP) -> Result<ResponsePayloadParsed<BP>, Errors>;
+    fn data(&self) -> &[u8];
+}
+
+impl <'a, BP: ResponseBodyParser> ResponseParser<BP> for ResponsePayload<'a> {
+    fn parse(&self, body_parser: &BP) -> Result<ResponsePayloadParsed<BP>, Errors> {
+        if self.data.len() < 1 {
+            return Err(Errors::NotEnoughDataGot);
+        }
+        let (instruction_code, error_code) =
+            if self.operation == Operation::Error {
+                if self.data.len() < 2 {
+                    return Err(Errors::NotEnoughDataGot);
+                }
+                (self.data[1], self.data[0])
+            } else {
+                (self.data[0], 0_u8)
+            };
+        let error_code = ErrorCode::for_code(error_code);
+        let instruction = DataInstructionCodes::get(self.data[0])?;
+        self.data =  if self.data.len() > 1 { &self.data[1..] } else { &self.data[0..0] };
+        let (request_id, data) = body_parser.parse_id(self.data)?;
+        self.data = data;
+        let needs_cache = body_parser.request_needs_cache(instruction);
+        Ok(ResponsePayloadParsed {
+            operation: self.operation,
+            instruction,
+            request_id,
+            needs_cache,
+            error_code,
+            data: self.data,
+            body_parser,
+        })
+    }
+
+    fn data(&self) -> &[u8] {
+        self.data
+    }
+}
+
+pub trait ResponseDataParser {
+    fn parse(&self) -> Result<DataInstructions, Errors>;
+}
+
+impl <'a, BP: ResponseBodyParser> ResponseDataParser for ResponsePayloadParsed<'a, BP> {
+    fn parse(&self) -> Result<DataInstructions, Errors> {
+        self.body_parser.parse(self.instruction, self.data)
+    }
+}
+
+pub trait SignalParser<'a> {
+    fn parse(&'a self) -> Result<SignalParseResult, Errors>;
+    fn data(&'a self) -> &'a [u8];
+}
+
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Debug)]
 pub struct RelaySignalData {
     relative_timestamp: RelativeSeconds,
@@ -206,86 +422,50 @@ pub struct RelaySignalData {
     is_called_internally: Option<bool>,
 }
 
-impl RelaySignalData {
-    pub fn new(relative_timestamp: RelativeSeconds, relay_idx: u8, is_on: bool, is_called_internally: Option<bool>) -> Self {
-        Self {
-            relative_timestamp,
-            relay_idx,
-            is_on,
-            is_called_internally,
-        }
-    }
-}
-
-#[derive(Copy, Clone, PartialEq, Debug)]
-pub struct SignalData {
-    pub instruction: Signals,
-    pub relay_signal_data: Option<RelaySignalData>,
-}
-
-pub trait SignalsParser {
-    fn parse(&self, instruction: Signals, data: &[u8]) -> Result<SignalData, Errors>;
-    fn parse_instruction(&self, instruction_code: u8) -> Option<Signals>;
-}
-
-pub struct SignalsParserImpl;
-
-impl SignalsParserImpl {
-    pub fn new() -> Self {
-        Self {}
-    }
-}
-
-impl SignalsParser for SignalsParserImpl {
-
-    fn parse_instruction(&self, instruction_code: u8) -> Option<Signals> {
-        if instruction_code == Signals::MonitoringStateChanged as u8 {
-            Some(Signals::MonitoringStateChanged)
-        } else if instruction_code == Signals::StateFixTry as u8 {
-            Some(Signals::StateFixTry)
-        } else if instruction_code == Signals::ControlStateChanged as u8 {
-            Some(Signals::ControlStateChanged)
-        } else if instruction_code == Signals::RelayStateChanged as u8 {
-            Some(Signals::RelayStateChanged)
-        } else if instruction_code == Signals::GetTimeStamp as u8 {
-            Some(Signals::GetTimeStamp)
+impl <'a> SignalParser<'a> for SignalPayload<'a> {
+    fn parse(&self) -> Result<SignalParseResult, Errors> {
+        let data: &[u8] = self.data;
+        if data.len() < 1 {
+            Err(Errors::InvalidDataSize)
         } else {
-            None
+            let signal = Signals::get(data[0])?;
+
+            let relay_signal_data =
+                if signal == Signals::GetTimeStamp {
+                    None
+                } else {
+                    if data.len() < 6 {
+                        return Err(Errors::InvalidDataSize);
+                    }
+                    let data =  &data[1..];
+                    let relay_idx = data[0] & 0x0f_u8;
+                    let is_on = data[0] & 0x10 > 0;
+                    let mut relative_seconds = 0_u32;
+                    for i in 0..4 {
+                        relative_seconds |= (data[1 + i] as u32) << (8 * (3 - i));
+                    }
+                    let is_called_internally = if signal == Signals::RelayStateChanged {
+                        Some(data[0] & 0x20 > 0)
+                    } else {
+                        None
+                    };
+                    Some(RelaySignalData{
+                        relay_idx,
+                        is_on,
+                        relative_timestamp: RelativeSeconds::new(relative_seconds),
+                        is_called_internally,
+                    })
+                };
+
+            Ok(SignalParseResult {
+                signal,
+                relay_signal_data,
+            })
         }
     }
 
-    fn parse(&self, instruction: Signals, data: &[u8]) -> Result<SignalData, Errors> {
-
-        let relay_signal_data =
-            if instruction == Signals::GetTimeStamp {
-                None
-            } else {
-                if data.len() < 5 {
-                    return Err(Errors::InvalidDataSize);
-                }
-                let relay_idx = data[0] & 0x0f_u8;
-                let is_on = data[0] & 0x10 > 0;
-                let mut relative_seconds = 0_u32;
-                for i in 0..4 {
-                    relative_seconds |= (data[1 + i] as u32) << (8 * (3 - i));
-                }
-                let is_called_internally = if instruction == Signals::RelayStateChanged {
-                    Some(data[0] & 0x20 > 0)
-                } else {
-                    None
-                };
-                Some(RelaySignalData{
-                    relay_idx,
-                    is_on,
-                    relative_timestamp: RelativeSeconds::new(relative_seconds),
-                    is_called_internally,
-                })
-            };
-
-        Ok(SignalData {
-            instruction,
-            relay_signal_data,
-        })
+    fn data(&'a self) -> &'a [u8] {
+        self.data
     }
 }
 
@@ -342,6 +522,176 @@ impl SignalsParser for SignalsParserImpl {
                 assert_eq!(Some((instruction_code, parse_error, false)), controller.signal_receiver.on_signal_error__params);
             }
         }
+    }
+    
+    
+    #[test]
+    fn test_on_get_command_should_report_error_not_enough_data_error_on_low_bytes_message() {
+
+        let datas = Vec::from([[].to_vec(), [1].to_vec()]);
+
+        for data in datas {
+            let mock_receiver = MockReceiver::new(data);
+            let handled_error: RefCell<Option<Errors>> = RefCell::new(None);
+            let mock_error_handler = |error: Errors| {
+                *handled_error.borrow_mut() = Some(error);
+            };
+            let mut controller = ReceiverFromSlaveController::new(
+                mock_receiver, MockSignalController::new(),
+                MockRequestsControllerRx::new(), &mock_error_handler);
+
+
+            controller.on_get_command();
+
+            assert_eq!(true, controller.rx.on_rx_transfer_interrupt_called);
+            assert_eq!(Err(Errors::NotEnoughDataGot), controller.rx.receiver_result.unwrap());
+            assert_eq!(Some(Errors::NotEnoughDataGot), *handled_error.borrow());
+            //nothing other should be called
+            assert_eq!(None, controller.signal_controller.process_signal_params);
+            assert_eq!(None, controller.requests_controller_rx.process_response_params);
+        }
+    }
+
+    #[test]
+    fn test_on_get_command_should_return_corrupted_data_error_on_starting_not_0() {
+        let mock_receiver = MockReceiver::new( [1, 2, 3].to_vec() );
+        let handled_error: RefCell<Option<Errors>> = RefCell::new(None);
+        let mock_error_handler = |error: Errors| {
+            *handled_error.borrow_mut() = Some(error);
+        };
+        let mut controller = ReceiverFromSlaveController::new(
+            mock_receiver, MockSignalController::new(),
+            MockRequestsControllerRx::new(), &mock_error_handler);
+
+        controller.on_get_command();
+
+        assert_eq!(true, controller.rx.on_rx_transfer_interrupt_called);
+        assert_eq!(Err(Errors::CommandDataCorrupted), controller.rx.receiver_result.unwrap());
+        assert_eq!(Some(Errors::CommandDataCorrupted), *handled_error.borrow());
+        //nothing other should be called
+        assert_eq!(None, controller.signal_controller.process_signal_params);
+        assert_eq!(None, controller.requests_controller_rx.process_response_params);
+    }
+
+    #[test]
+    fn test_on_get_command_should_renurn_not_recognized_on_unknown() {
+        let not_request_not_signal_operations = [OperationCodes::Unknown as u8, OperationCodes::None as u8,
+            OperationCodes::Set as u8, OperationCodes::Read as u8, OperationCodes::Command as u8, 12, 56];
+
+        for operation_code in not_request_not_signal_operations {
+            let mock_receiver = MockReceiver::new( [OperationCodes::None as u8, operation_code, 0].to_vec() );
+            let handled_error: RefCell<Option<Errors>> = RefCell::new(None);
+            let mock_error_handler = |error: Errors| {
+                *handled_error.borrow_mut() = Some(error);
+            };
+            let mut controller = ReceiverFromSlaveController::new(
+                mock_receiver, MockSignalController::new(),
+                MockRequestsControllerRx::new(), &mock_error_handler);
+
+            controller.on_get_command();
+
+            assert_eq!(true, controller.rx.on_rx_transfer_interrupt_called);
+            assert_eq!(Some(operation_code), *controller.requests_controller_rx.is_response_param.borrow());
+            assert_eq!(Err(Errors::OperationNotRecognized(operation_code)), controller.rx.receiver_result.unwrap());
+            assert_eq!(Some(Errors::OperationNotRecognized(operation_code)), *handled_error.borrow());
+            //nothing other should be called
+            assert_eq!(None, controller.signal_controller.process_signal_params);
+            assert_eq!(None, controller.requests_controller_rx.process_response_params);
+        }
+    }
+
+    #[test]
+    fn test_on_get_command_should_report_error_on_parse_operation_error() {
+        let mut rng = rand::thread_rng();
+        let data = [rng.gen_range(1..u8::MAX), rng.gen_range(1..u8::MAX),
+            rng.gen_range(1..u8::MAX)].to_vec();
+        let mock_receiver = MockReceiver::new(data);
+        let handled_error: RefCell<Option<Errors>> = RefCell::new(None);
+        let mock_error_handler = |error: Errors| {
+            *handled_error.borrow_mut() = Some(error);
+        };
+
+        let error = Errors::CommandDataCorrupted;
+        let mock_parser = MockPayloadParser::default(Err(error));
+        let payload_parser_producer_param: Option<Vec<u8>> = None;
+        let mock_parse_payload_producer = |data: &[u8]| {
+            payload_parser_producer_param.replace(data.to_vec());
+            Ok(mock_parser)
+        };
+
+        let mut controller = ReceiverFromSlaveControllerTestable::new(
+            mock_receiver, MockSignalController::new(),
+            MockRequestsControllerRx::new(), &mock_error_handler,
+            mock_parse_payload_producer);
+
+        controller.on_get_command();
+
+        assert_eq!(true, controller.rx.on_rx_transfer_interrupt_called);
+        assert_eq!(Some(data), payload_parser_producer_param.borrow());
+        assert_eq!(true, mock_parser.parse_operation_called);
+        assert_eq!(Err(error), controller.rx.receiver_result.unwrap());
+        assert_eq!(Some(error), *handled_error.borrow());
+        //nothing other should be called
+        assert_eq!(None, controller.signal_controller.process_signal_params);
+        assert_eq!(None, controller.requests_controller_rx.process_response_params);
+    }
+
+    #[test]
+    fn test_on_get_command_should_renurn_not_recognized_on_unknown() {
+        let not_request_not_signal_operations = [Operation::None, Operation::Success,
+            Operation::Error, Operation::Response, Operation::Command];
+        let mut rng = rand::thread_rng();
+
+        for operation in not_request_not_signal_operations {
+            let data = [rng.gen_range(1..u8::MAX), rng.gen_range(1..u8::MAX),
+                rng.gen_range(1..u8::MAX)].to_vec();
+            let mock_receiver = MockReceiver::new(data);
+            let handled_error: RefCell<Option<Errors>> = RefCell::new(None);
+            let mock_error_handler = |error: Errors| {
+                *handled_error.borrow_mut() = Some(error);
+            };
+
+            let mock_parser = MockPayloadParser::default(Ok(operation));
+            let payload_parser_producer_param: Option<Vec<u8>> = None;
+            let mock_parse_payload_producer = |data: &[u8]| {
+                payload_parser_producer_param.replace(data.to_vec());
+                Ok(mock_parser)
+            };
+
+            let mut controller = ReceiverFromSlaveControllerTestable::new(
+                mock_receiver, MockSignalController::new(),
+                MockRequestsControllerRx::new(), &mock_error_handler,
+                mock_parse_payload_producer);
+
+            controller.on_get_command();
+
+            assert_eq!(true, controller.rx.on_rx_transfer_interrupt_called);
+            assert_eq!(Some(data), payload_parser_producer_param.borrow());
+            assert_eq!(true, mock_parser.parse_operation_called);
+            assert_eq!(Err(Errors::WrongIncomingOperation(operation)), controller.rx.receiver_result.unwrap());
+            assert_eq!(Some(Errors::WrongIncomingOperation(operation)), *handled_error.borrow());
+            //nothing other should be called
+            assert_eq!(None, controller.signal_controller.process_signal_params);
+            assert_eq!(None, controller.requests_controller_rx.process_response_params);
+        }
+    }
+    
+    #[test]
+    fn test_signal_controller_should_report_error_on_empty_data() {
+        let mut signal_controller =
+            SignalControllerImpl::new(MockSignalsHandler::new(),
+                                      MockSignalsParser::new(Err(Errors::CommandDataCorrupted),
+                                                             None));
+        let data = [];
+
+        signal_controller.process_signal(&data);
+
+        assert_eq!(Some((Signals::Unknown, Errors::InvalidDataSize, false)),
+                   signal_controller.signal_handler.on_signal_error_params);
+        //should not call other methods
+        assert_eq!(None, signal_controller.signal_handler.on_signal_signal_data);
+        assert_eq!(None, signal_controller.signal_parser.test_data.borrow().parse_instruction_params);
+        assert_eq!(None, signal_controller.signal_parser.test_data.borrow().parse_params);
     }
  */
 

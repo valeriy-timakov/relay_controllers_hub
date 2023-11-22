@@ -1,5 +1,6 @@
 #![deny(unsafe_code)]
 
+use crate::services::slave_controller_link::domain::Operation;
 
 
 #[derive(Debug, PartialEq, Copy, Clone)]
@@ -26,6 +27,9 @@ pub enum Errors {
     SwitchesDataCountOverflow,
     InvalidDataSize,
     InstructionNotSerializable,
+    WrongStateNotParsed,
+    WrongStateIncompatibleOperation(Operation),
+    WrongIncomingOperation(Operation),
 }
 
 #[derive(Debug, PartialEq, Copy, Clone)]

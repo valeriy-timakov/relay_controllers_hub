@@ -4,7 +4,7 @@
 use crate::errors::Errors;
 use crate::hal_ext::rtc_wrapper::RelativeMillis;
 use crate::services::slave_controller_link::domain::{Conversation, DataInstructions, ErrorCode, OperationCodes, Signals};
-use crate::services::slave_controller_link::parsers::SignalData;
+use crate::services::slave_controller_link::parsers::SignalParseResult;
 use crate::services::slave_controller_link::signals_controller::SignalsHandler;
 use crate::services::slave_controller_link::transmitter_to_slave::ErrorsSender;
 
@@ -43,25 +43,26 @@ impl  <'a, SH, TS, S> SignalsHandler for SignalsHandlerProxy<'a, SH, TS, S>
         S: ControlledRequestSender + ErrorsSender,
 {
 
-    fn on_signal(&mut self, signal_data: SignalData) {
-        if signal_data.instruction == Signals::GetTimeStamp {
+    fn on_signal(&mut self, signal_data: SignalParseResult) {
+        if signal_data.signal() == Signals::GetTimeStamp {
             let timestamp = (self.time_source)();
             let res = self.tx.send(
                 OperationCodes::Set,
                 DataInstructions::RemoteTimestamp(Conversation::Data(timestamp.seconds())),
                 timestamp);
             if res.is_err() {
-                self.handler.on_signal_error(signal_data.instruction, res.err().unwrap(), false);
+                self.handler.on_signal_process_error(res.err().unwrap(), false, signal_data);
             }
         } else {
             self.handler.on_signal(signal_data);
         }
     }
 
-    fn on_signal_error(&mut self, instruction: Signals, error: Errors, _: bool) {
+    fn on_signal_parse_error(&mut self, error: Errors, sent_to_slave_success: bool, data: &[u8]) {
         let error_code = ErrorCode::for_error(error);
-        let sent_to_slave_success = self.tx.send_error(instruction as u8, error_code).is_ok();
-        self.handler.on_signal_error(instruction, error, sent_to_slave_success);
+        let instruction = if !data.is_empty() { data[0] }  else { Signals::None as u8 };
+        let sent_to_slave_success = self.tx.send_error(instruction, error_code).is_ok();
+        self.handler.on_signal_parse_error(error, sent_to_slave_success, data);
     }
 
 }
@@ -76,7 +77,7 @@ mod tests {
     use rand::prelude::*;
     use crate::errors::DMAError;
     use crate::hal_ext::rtc_wrapper::RelativeSeconds;
-    use crate::services::slave_controller_link::parsers::RelaySignalData;
+    use crate::services::slave_controller_link::parsers::{RelaySignalData, SignalParseResult};
 
     #[test]
     fn test_signals_proxy_sends_timestamp() {
@@ -97,10 +98,7 @@ mod tests {
             &mut mock_tx
         );
 
-        let data = SignalData {
-            instruction: Signals::GetTimeStamp,
-            relay_signal_data: None,
-        };
+        let data = SignalParseResult::new(Signals::GetTimeStamp,None);
 
         proxy.on_signal(data);
 
@@ -128,10 +126,7 @@ mod tests {
             timestamp
         };
 
-        let data = SignalData {
-            instruction: Signals::GetTimeStamp,
-            relay_signal_data: None,
-        };
+        let data = SignalParseResult::new(Signals::GetTimeStamp, None);
 
         let errors = [Errors::OutOfRange, Errors::NoBufferAvailable, Errors::DmaError(DMAError::Overrun(())),
             Errors::DmaError(DMAError::NotReady(())), Errors::DmaError(DMAError::SmallBuffer(())),
@@ -177,19 +172,13 @@ mod tests {
         let mut rng = rand::thread_rng();
 
         let datas = [
-            SignalData {
-                instruction: Signals::ControlStateChanged,
-                relay_signal_data: None,
-            },
-            SignalData {
-                instruction: Signals::MonitoringStateChanged,
-                relay_signal_data: Some(RelaySignalData::new (
-                    RelativeSeconds::new(rng.gen_range(1..u32::MAX)),
-                    rng.gen_range(0..15),
-                    rng.gen_range(0..1) == 1,
-                    Some(rng.gen_range(0..1) == 1),
-                )),
-            },
+            SignalParseResult::new(Signals::ControlStateChanged, None) ,
+            SignalParseResult::new(Signals::MonitoringStateChanged, Some(RelaySignalData::new (
+                RelativeSeconds::new(rng.gen_range(1..u32::MAX)),
+                rng.gen_range(0..15),
+                rng.gen_range(0..1) == 1,
+                Some(rng.gen_range(0..1) == 1),
+            ))),
         ];
 
         for data in datas {
@@ -243,7 +232,7 @@ mod tests {
     }
 
     struct MockSignalsHandler {
-        on_signal_signal_data: Option<SignalData>,
+        on_signal_signal_data: Option<SignalParseResult>,
         on_signal_error_params: Option<(Signals, Errors, bool)>,
     }
 
@@ -257,20 +246,20 @@ mod tests {
     }
 
     impl SignalsHandler for MockSignalsHandler {
-        fn on_signal(&mut self, signal_data: SignalData) {
+        fn on_signal(&mut self, signal_data: SignalParseResult) {
             self.on_signal_signal_data = Some(signal_data);
         }
-        fn on_signal_error(&mut self, instruction: Signals, error: Errors, sent: bool) {
+        fn on_signal_parse_error(&mut self, instruction: Signals, error: Errors, sent: bool) {
             self.on_signal_error_params = Some((instruction, error, sent));
         }
     }
 
     impl SignalsHandler for Rc<RefCell<MockSignalsHandler>> {
-        fn on_signal(&mut self, signal_data: SignalData) {
+        fn on_signal(&mut self, signal_data: SignalParseResult) {
             self.borrow_mut().on_signal(signal_data);
         }
-        fn on_signal_error(&mut self, instruction: Signals, error: Errors, sent: bool) {
-            self.borrow_mut().on_signal_error(instruction, error, sent);
+        fn on_signal_parse_error(&mut self, instruction: Signals, error: Errors, sent: bool) {
+            self.borrow_mut().on_signal_parse_error(instruction, error, sent);
         }
     }
 

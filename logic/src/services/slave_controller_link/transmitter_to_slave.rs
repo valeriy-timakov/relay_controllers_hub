@@ -43,7 +43,7 @@ impl <TxBuff, S> TransmitterToSlaveController<TxBuff, S>
     }
 
     #[inline(always)]
-    pub fn inner(&mut self) -> &mut S {
+    pub fn inner_tx(&mut self) -> &mut S {
         &mut self.tx
     }
 

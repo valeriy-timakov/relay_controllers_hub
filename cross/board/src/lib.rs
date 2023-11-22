@@ -48,7 +48,7 @@ impl SignalsHandler for SignalReceiverImp {
         todo!()
     }
 
-    fn on_signal_error(&mut self, _: Signals, _: ErrorCode) {
+    fn on_signal_parse_error(&mut self, _: Signals, _: ErrorCode) {
         todo!()
     }
 

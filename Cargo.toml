@@ -2,5 +2,6 @@
 members = [
   "host-target-tests",
   "logic",
+  "drivers",
   "xtask",
 ]
