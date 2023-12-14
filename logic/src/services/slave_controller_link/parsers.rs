@@ -116,7 +116,7 @@ fn cache_getter(code: DataInstructionCodes) -> Option< &'static Box<dyn CashedIn
 
 pub trait ResponseBodyParser {
     fn request_needs_cache(&self, instruction: DataInstructionCodes) -> bool;
-    fn parse_id(&self, data: &[u8]) -> Result<(Option<u32>, &[u8]), Errors>;
+    fn parse_id<'a>(&self, data: &'a[u8]) -> Result<(Option<u32>, &'a[u8]), Errors>;
     fn parse(&self, instruction: DataInstructionCodes, data: &[u8]) -> Result<DataInstructions, Errors>;
     fn slave_controller_version(&self) -> Version;
 }
@@ -155,7 +155,7 @@ impl ResponseBodyParser for ResponseBodyParserImpl {
         }
     }
 
-    fn parse_id(&self, data: &[u8]) -> Result<(Option<u32>, &[u8]), Errors> {
+    fn parse_id<'a>(&self, data: &'a[u8]) -> Result<(Option<u32>, &'a[u8]), Errors> {
         match self.slave_controller_version {
             Version::V1 => {
                 Ok( (None, data) )
@@ -178,16 +178,16 @@ impl ResponseBodyParser for ResponseBodyParserImpl {
 
 }
 
-pub enum PayloadParserResult<'a, SP, RP, RBP>
+pub enum PayloadParserResult<SP, RP, RBP, RPP>
     where 
-        SP: SignalParser<'a>,
-        RP: ResponseParser<RBP>, 
+        SP: SignalParser,
+        RP: ResponseParser<RBP, RPP>,
         RBP: ResponseBodyParser,
+        RPP: ResponsePostParser + ResponseDataParser<RBP>,
 {
     ResponsePayload(RP),
     SignalPayload(SP),
-    _fake(RBP),
-    _fake1(&'a[u8]),
+    _fake((RBP, RPP)),
 }
 
 pub struct ResponsePayload<'a> {
@@ -196,7 +196,7 @@ pub struct ResponsePayload<'a> {
 }
 
 impl <'a> ResponsePayload<'a> {
-    fn new(data: &[u8], operation: Operation) -> Self {
+    fn new(data: &'a[u8], operation: Operation) -> Self {
         Self {
             data,
             operation,
@@ -209,31 +209,29 @@ pub struct SignalPayload<'a> {
 }
 
 impl <'a> SignalPayload<'a> {
-    pub fn new(data: &[u8]) -> Self {
+    pub fn new(data: &'a[u8]) -> Self {
         Self {
             data,
         }
     }
 }
 
-pub struct ResponsePayloadParsed<'a, BP: ResponseBodyParser> {
+pub struct ResponsePayloadParsed<'a> {
     operation: Operation,
     instruction: DataInstructionCodes,
     request_id: Option<u32>,
     needs_cache: bool,
     error_code: ErrorCode,
-    body_parser: &'a BP,
     data: &'a[u8],
 }
 
-impl <'a, BP: ResponseBodyParser> ResponsePayloadParsed<'a, BP> {
+impl <'a> ResponsePayloadParsed<'a> {
     pub fn new(
         operation: Operation,
         instruction: DataInstructionCodes,
         request_id: Option<u32>,
         needs_cache: bool,
         error_code: ErrorCode,
-        body_parser: &'a BP,
         data: &'a[u8],
     ) -> Self {
         Self {
@@ -242,34 +240,33 @@ impl <'a, BP: ResponseBodyParser> ResponsePayloadParsed<'a, BP> {
             request_id,
             needs_cache,
             error_code,
-            body_parser,
             data,
         }
     }
 }
 
-impl <'a, BP: ResponseBodyParser> ResponsePayloadParsed<'a, BP> {
-    pub fn operation(&self) -> Operation {
+impl <'a> ResponsePostParser for ResponsePayloadParsed<'a> {
+    fn operation(&self) -> Operation {
         self.operation
     }
 
-    pub fn instruction(&self) -> DataInstructionCodes {
+    fn instruction(&self) -> DataInstructionCodes {
         self.instruction
     }
 
-    pub fn request_id(&self) -> Option<u32> {
+    fn request_id(&self) -> Option<u32> {
         self.request_id
     }
 
-    pub fn needs_cache(&self) -> bool {
+    fn needs_cache(&self) -> bool {
         self.needs_cache
     }
 
-    pub fn error_code(&self) -> ErrorCode {
+    fn error_code(&self) -> ErrorCode {
         self.error_code
     }
 
-    pub fn data(&self) -> &'a[u8] {
+    fn data(&self) -> &[u8] {
         self.data
     }
 }
@@ -299,13 +296,14 @@ impl SignalParseResult {
     }
 }
 
-pub trait PayloadParser<'a, SP, RP, RBP>
+pub trait PayloadParser<'a, SP, RP, RBP, RPP>
     where
-        SP: SignalParser<'a>,
-        RP: ResponseParser<RBP>,
-        RBP: ResponseBodyParser, 
+        SP: SignalParser,
+        RP: ResponseParser<RBP, RPP>,
+        RBP: ResponseBodyParser,
+        RPP: ResponsePostParser + ResponseDataParser<RBP>,
 {
-    fn parse(&self, data: &'a[u8]) -> Result<PayloadParserResult<'a, SP, RP, RBP>, Errors>;
+    fn parse(&self, data: &'a [u8]) -> Result<PayloadParserResult<SP, RP, RBP, RPP>, Errors>;
 }
 
 pub struct PayloadParserImpl ();
@@ -335,12 +333,13 @@ impl PayloadParserImpl {
         let operation_result =
             if operation != Operation::None { Ok(operation) }
             else { Err(Errors::OperationNotRecognized(operation_code)) };
-        Ok((operation, &data[1..]))
+        operation_result.map(|operation: Operation| { (operation, &data[1..]) })
     }
 }
 
-impl <'a, RBP: ResponseBodyParser> PayloadParser<'a, SignalPayload<'a>, ResponsePayload<'a>, RBP> for PayloadParserImpl {
-    fn parse(&self, data: &'a [u8]) -> Result<PayloadParserResult<'a, SignalPayload<'a>, ResponsePayload<'a>, RBP>, Errors> {
+
+impl <'a, RBP: ResponseBodyParser> PayloadParser<'a, SignalPayload<'a>, ResponsePayload<'a>, RBP, ResponsePayloadParsed<'a>> for PayloadParserImpl {
+    fn parse(&self, data: &'a [u8]) -> Result<PayloadParserResult<SignalPayload<'a>, ResponsePayload<'a>, RBP, ResponsePayloadParsed<'a>>, Errors> {
         if data.len() < 2 {
             Err(Errors::NotEnoughDataGot)
         } else if data[0] != OperationCodes::None as u8 {
@@ -358,30 +357,38 @@ impl <'a, RBP: ResponseBodyParser> PayloadParser<'a, SignalPayload<'a>, Response
     }
 }
 
-pub trait ResponseParser <BP: ResponseBodyParser> {
-    fn parse(&self, body_parser: &BP) -> Result<ResponsePayloadParsed<BP>, Errors>;
+pub trait ResponsePostParser {
+    fn operation(&self) -> Operation;
+    fn instruction(&self) -> DataInstructionCodes;
+    fn request_id(&self) -> Option<u32>;
+    fn needs_cache(&self) -> bool;
+    fn error_code(&self) -> ErrorCode;
     fn data(&self) -> &[u8];
 }
 
-impl <'a, BP: ResponseBodyParser> ResponseParser<BP> for ResponsePayload<'a> {
-    fn parse(&self, body_parser: &BP) -> Result<ResponsePayloadParsed<BP>, Errors> {
+pub trait ResponseParser <RBP: ResponseBodyParser, RPP: ResponsePostParser + ResponseDataParser<RBP>> {
+    fn parse(&self, body_parser: &RBP) -> Result<RPP, Errors>;
+    fn data(&self) -> &[u8];
+}
+
+impl <'a, RBP: ResponseBodyParser> ResponseParser<RBP, ResponsePayloadParsed<'a>> for ResponsePayload<'a> {
+    fn parse(&self, body_parser: &RBP) -> Result<ResponsePayloadParsed<'a>, Errors> {
         if self.data.len() < 1 {
             return Err(Errors::NotEnoughDataGot);
         }
-        let (instruction_code, error_code) =
+        let (instruction_code, error_code, next_position) =
             if self.operation == Operation::Error {
                 if self.data.len() < 2 {
                     return Err(Errors::NotEnoughDataGot);
                 }
-                (self.data[1], self.data[0])
+                (self.data[1], self.data[0], 2_usize)
             } else {
-                (self.data[0], 0_u8)
+                (self.data[0], 0_u8, 1_usize)
             };
         let error_code = ErrorCode::for_code(error_code);
-        let instruction = DataInstructionCodes::get(self.data[0])?;
-        self.data =  if self.data.len() > 1 { &self.data[1..] } else { &self.data[0..0] };
-        let (request_id, data) = body_parser.parse_id(self.data)?;
-        self.data = data;
+        let instruction = DataInstructionCodes::get(instruction_code)?;
+        let data =  if self.data.len() > next_position { &self.data[next_position..] } else { &self.data[0..0] };
+        let (request_id, data) = body_parser.parse_id(data)?;
         let needs_cache = body_parser.request_needs_cache(instruction);
         Ok(ResponsePayloadParsed {
             operation: self.operation,
@@ -389,8 +396,7 @@ impl <'a, BP: ResponseBodyParser> ResponseParser<BP> for ResponsePayload<'a> {
             request_id,
             needs_cache,
             error_code,
-            data: self.data,
-            body_parser,
+            data,
         })
     }
 
@@ -399,19 +405,19 @@ impl <'a, BP: ResponseBodyParser> ResponseParser<BP> for ResponsePayload<'a> {
     }
 }
 
-pub trait ResponseDataParser {
-    fn parse(&self) -> Result<DataInstructions, Errors>;
+pub trait ResponseDataParser<RBP: ResponseBodyParser> {
+    fn parse(&self, body_parser: &RBP) -> Result<DataInstructions, Errors>;
 }
 
-impl <'a, BP: ResponseBodyParser> ResponseDataParser for ResponsePayloadParsed<'a, BP> {
-    fn parse(&self) -> Result<DataInstructions, Errors> {
-        self.body_parser.parse(self.instruction, self.data)
+impl <'a, RBP: ResponseBodyParser> ResponseDataParser<RBP> for ResponsePayloadParsed<'a> {
+    fn parse(&self, body_parser: &RBP) -> Result<DataInstructions, Errors> {
+        body_parser.parse(self.instruction, self.data)
     }
 }
 
-pub trait SignalParser<'a> {
-    fn parse(&'a self) -> Result<SignalParseResult, Errors>;
-    fn data(&'a self) -> &'a [u8];
+pub trait SignalParser {
+    fn parse(&self) -> Result<SignalParseResult, Errors>;
+    fn data(&self) -> &[u8];
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Debug)]
@@ -422,7 +428,18 @@ pub struct RelaySignalData {
     is_called_internally: Option<bool>,
 }
 
-impl <'a> SignalParser<'a> for SignalPayload<'a> {
+impl RelaySignalData {
+    pub fn new(relative_timestamp: RelativeSeconds, relay_idx: u8, is_on: bool, is_called_internally: Option<bool>) -> Self {
+        Self {
+            relative_timestamp,
+            relay_idx,
+            is_on,
+            is_called_internally,
+        }
+    }
+}
+
+impl <'a> SignalParser for SignalPayload<'a> {
     fn parse(&self) -> Result<SignalParseResult, Errors> {
         let data: &[u8] = self.data;
         if data.len() < 1 {
@@ -464,7 +481,7 @@ impl <'a> SignalParser<'a> for SignalPayload<'a> {
         }
     }
 
-    fn data(&'a self) -> &'a [u8] {
+    fn data(&self) -> &[u8] {
         self.data
     }
 }

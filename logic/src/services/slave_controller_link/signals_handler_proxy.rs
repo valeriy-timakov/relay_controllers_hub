@@ -65,6 +65,10 @@ impl  <'a, SH, TS, S> SignalsHandler for SignalsHandlerProxy<'a, SH, TS, S>
         self.handler.on_signal_parse_error(error, sent_to_slave_success, data);
     }
 
+    fn on_signal_process_error(&mut self, error: Errors, sent_to_slave_success: bool, data: SignalParseResult) {
+        self.handler.on_signal_process_error(error, sent_to_slave_success, data);
+    }
+
 }
 
 
@@ -72,11 +76,13 @@ impl  <'a, SH, TS, S> SignalsHandler for SignalsHandlerProxy<'a, SH, TS, S>
 #[cfg(test)]
 mod tests {
     use alloc::rc::Rc;
+    use alloc::vec::Vec;
     use core::cell::{RefCell};
     use super::*;
     use rand::prelude::*;
     use crate::errors::DMAError;
     use crate::hal_ext::rtc_wrapper::RelativeSeconds;
+    use crate::services::slave_controller_link::domain::Operation;
     use crate::services::slave_controller_link::parsers::{RelaySignalData, SignalParseResult};
 
     #[test]
@@ -110,7 +116,7 @@ mod tests {
                 timestamp)),
             mock_tx.send_params);
         assert_eq!(None, mock_signals_handler.borrow().on_signal_signal_data);
-        assert_eq!(None, mock_signals_handler.borrow().on_signal_error_params);
+        assert_eq!(None, mock_signals_handler.borrow().on_signal_parse_error_params);
 
     }
 
@@ -151,7 +157,7 @@ mod tests {
                     timestamp)),
                 mock_tx.send_params);
             assert_eq!(None, mock_signals_handler.borrow().on_signal_signal_data);
-            assert_eq!(Some((Signals::GetTimeStamp, error, false)), mock_signals_handler.borrow().on_signal_error_params);
+            assert_eq!(Some((error, false, data)), mock_signals_handler.borrow().on_signal_process_errorr_params);
         }
 
     }
@@ -193,7 +199,7 @@ mod tests {
             assert_eq!(false, *time_source_called.borrow());
             assert_eq!(None, mock_tx.send_params);
             assert_eq!(Some(data), mock_signals_handler.borrow().on_signal_signal_data);
-            assert_eq!(None, mock_signals_handler.borrow().on_signal_error_params);
+            assert_eq!(None, mock_signals_handler.borrow().on_signal_parse_error_params);
         }
     }
     struct MockControlledSender {
@@ -233,14 +239,16 @@ mod tests {
 
     struct MockSignalsHandler {
         on_signal_signal_data: Option<SignalParseResult>,
-        on_signal_error_params: Option<(Signals, Errors, bool)>,
+        on_signal_parse_error_params: Option<(Errors, bool, Vec<u8>)>,
+        on_signal_process_errorr_params: Option<(Errors, bool, SignalParseResult)>,
     }
 
     impl MockSignalsHandler {
         fn new() -> Self {
             Self {
                 on_signal_signal_data: None,
-                on_signal_error_params: None,
+                on_signal_parse_error_params: None,
+                on_signal_process_errorr_params: None,
             }
         }
     }
@@ -249,8 +257,11 @@ mod tests {
         fn on_signal(&mut self, signal_data: SignalParseResult) {
             self.on_signal_signal_data = Some(signal_data);
         }
-        fn on_signal_parse_error(&mut self, instruction: Signals, error: Errors, sent: bool) {
-            self.on_signal_error_params = Some((instruction, error, sent));
+        fn on_signal_parse_error(&mut self, error: Errors, sent_to_slave_success: bool, data: &[u8]) {
+            self.on_signal_parse_error_params = Some((error, sent_to_slave_success, data.to_vec()));
+        }
+        fn on_signal_process_error(&mut self, error: Errors, sent_to_slave_success: bool, data: SignalParseResult) {
+            self.on_signal_process_errorr_params = Some((error, sent_to_slave_success, data));
         }
     }
 
@@ -258,8 +269,11 @@ mod tests {
         fn on_signal(&mut self, signal_data: SignalParseResult) {
             self.borrow_mut().on_signal(signal_data);
         }
-        fn on_signal_parse_error(&mut self, instruction: Signals, error: Errors, sent: bool) {
-            self.borrow_mut().on_signal_parse_error(instruction, error, sent);
+        fn on_signal_parse_error(&mut self, error: Errors, sent_to_slave_success: bool, data: &[u8]) {
+            self.borrow_mut().on_signal_parse_error(error, sent_to_slave_success, data);
+        }
+        fn on_signal_process_error(&mut self, error: Errors, sent_to_slave_success: bool, data: SignalParseResult) {
+            self.borrow_mut().on_signal_process_error(error, sent_to_slave_success, data);
         }
     }
 

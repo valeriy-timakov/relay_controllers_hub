@@ -13,7 +13,7 @@ use crate::services::slave_controller_link::domain::{*};
 use crate::errors::Errors;
 use crate::hal_ext::rtc_wrapper::{RelativeMillis, RelativeSeconds };
 use crate::hal_ext::serial_transfer::{ ReadableBuffer, Receiver, RxTransfer, RxTransferProxy, Sender, SerialTransfer, TxTransfer, TxTransferProxy};
-use crate::services::slave_controller_link::parsers::{PayloadParserImpl, ResponseBodyParserImpl, ResponseParser, ResponsePayload, SignalPayload};
+use crate::services::slave_controller_link::parsers::{PayloadParserImpl, ResponseBodyParserImpl, ResponseParser, ResponsePayload, ResponsePayloadParsed, SignalPayload};
 use crate::services::slave_controller_link::receiver_from_slave::ReceiverFromSlaveController;
 use crate::utils::dma_read_buffer::BufferWriter;
 use crate::services::slave_controller_link::requests_controller::{RequestsController, RequestsControllerRx, RequestsControllerTx, ResponseHandler, SentRequest};
@@ -30,13 +30,13 @@ pub struct SlaveControllerLink<'a, T, R, TxBuff, RxBuff, SH, RH, EH>
         T: TxTransferProxy<TxBuff>,
         R: RxTransferProxy<RxBuff>,
         SH: SignalsHandler,
-        RH: ResponseHandler<ResponseBodyParserImpl>,
+        RH: ResponseHandler<ResponsePayloadParsed<'a>>,
         EH: Fn(Errors),
 {
     tx: TransmitterToSlaveController<TxBuff, TxTransfer<T, TxBuff>>,
     rx: ReceiverFromSlaveController<'a,
-        RxTransfer<R, RxBuff>, SignalControllerImpl<SH>, RequestsController<RH, ResponseBodyParserImpl>,
-        EH, PayloadParserImpl, SignalPayload<'a>, ResponsePayload<'a>, ResponseBodyParserImpl
+        RxTransfer<R, RxBuff>, SignalControllerImpl<SH>, RequestsController<RH, ResponseBodyParserImpl, ResponsePayloadParsed<'a>>,
+        EH, PayloadParserImpl, SignalPayload<'a>, ResponsePayload<'a>, ResponseBodyParserImpl, ResponsePayloadParsed<'a>
     >,
 }
 
@@ -48,7 +48,7 @@ impl <'a, T, R, TxBuff, RxBuff, SH, RH, EH> SlaveControllerLink<'a, T, R,TxBuff,
         T: TxTransferProxy<TxBuff>,
         R: RxTransferProxy<RxBuff>,
         SH: SignalsHandler,
-        RH: ResponseHandler<ResponseBodyParserImpl>,
+        RH: ResponseHandler<ResponsePayloadParsed<'a>>,
         EH: Fn(Errors),
 {
     pub fn create(serial_transfer: SerialTransfer<T, R, TxBuff, RxBuff>, signals_handler: SH,

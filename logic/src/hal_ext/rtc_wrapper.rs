@@ -22,7 +22,7 @@ impl RelativeMillis {
 
     #[inline(always)]
     pub fn seconds(&self) -> RelativeSeconds {
-        RelativeSeconds(self.0 / Millisecond.per(Second) as u32)
+        RelativeSeconds(self.0 / 1000/*Millisecond.per(Second)*/ as u32)
     }
 }
 
@@ -73,8 +73,8 @@ impl<RTC: Rtc> RtcWrapper<RTC> {
                 let current_date_time = self.get_datetime();
                 let duration = current_date_time - base_date_time;
 
-                RelativeMillis( duration.whole_seconds() as u32 * Millisecond.per(Second) as u32
-                    + duration.subsec_nanoseconds() as u32 / Nanosecond.per(Millisecond) )
+                RelativeMillis( duration.whole_seconds() as u32 * 1000/*Millisecond.per(Second)*/ as u32
+                    + duration.subsec_nanoseconds() as u32 / 1000/*Nanosecond.per(Millisecond)*/ )
             },
             None => {
                 self.base_date_time = Some(self.get_datetime());
@@ -86,8 +86,8 @@ impl<RTC: Rtc> RtcWrapper<RTC> {
     pub fn relative_timestamp_to_date_time(&self, millis: RelativeMillis) -> Option<PrimitiveDateTime> {
         self.base_date_time.map(|base_date_time| {
             let duration = time::Duration::new(
-                (millis.0 / Millisecond.per(Second) as u32) as i64,
-                ((millis.0 % Millisecond.per(Second) as u32) * Nanosecond.per(Millisecond)) as i32);
+                (millis.0 / 1000/*Millisecond.per(Second)*/ as u32) as i64,
+                ((millis.0 % 1000/*Millisecond.per(Second)*/ as u32) * 1000/*1000/*Nanosecond.per(Millisecond)*/*/) as i32);
             base_date_time + duration
         })
     }
