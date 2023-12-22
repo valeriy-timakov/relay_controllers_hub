@@ -23,32 +23,32 @@ use crate::services::slave_controller_link::receiver_from_slave::ReceiverFromSla
 
 
 
-pub struct SlaveControllerLink<'a, T, R, TxBuff, RxBuff, SH, RH, EH>
+pub struct SlaveControllerLink<T, R, TxBuff, RxBuff, SH, RH, EH>
     where
         TxBuff: ReadBuffer + BufferWriter,
         RxBuff: WriteBuffer + ReadableBuffer,
         T: TxTransferProxy<TxBuff>,
         R: RxTransferProxy<RxBuff>,
         SH: SignalsHandler,
-        RH: ResponseHandler<ResponsePayloadParsed<'a>>,
+        RH: ResponseHandler<ResponsePayloadParsed>,
         EH: Fn(Errors),
 {
     tx: TransmitterToSlaveController<TxBuff, TxTransfer<T, TxBuff>>,
-    rx: ReceiverFromSlaveController<'a,
-        RxTransfer<R, RxBuff>, SignalControllerImpl<SH>, RequestsController<RH, ResponseBodyParserImpl, ResponsePayloadParsed<'a>>,
-        EH, PayloadParserImpl, SignalPayload<'a>, ResponsePayload<'a>, ResponseBodyParserImpl, ResponsePayloadParsed<'a>
+    rx: ReceiverFromSlaveController<
+        RxTransfer<R, RxBuff>, SignalControllerImpl<SH>, RequestsController<RH, ResponseBodyParserImpl, ResponsePayloadParsed>,
+        EH, PayloadParserImpl, SignalPayload, ResponsePayload, ResponseBodyParserImpl, ResponsePayloadParsed
     >,
 }
 
 
-impl <'a, T, R, TxBuff, RxBuff, SH, RH, EH> SlaveControllerLink<'a, T, R,TxBuff, RxBuff, SH, RH, EH>
+impl <'a, T, R, TxBuff, RxBuff, SH, RH, EH> SlaveControllerLink<T, R,TxBuff, RxBuff, SH, RH, EH>
     where
         TxBuff: ReadBuffer + BufferWriter,
         RxBuff: WriteBuffer + ReadableBuffer,
         T: TxTransferProxy<TxBuff>,
         R: RxTransferProxy<RxBuff>,
         SH: SignalsHandler,
-        RH: ResponseHandler<ResponsePayloadParsed<'a>>,
+        RH: ResponseHandler<ResponsePayloadParsed>,
         EH: Fn(Errors),
 {
     pub fn create(serial_transfer: SerialTransfer<T, R, TxBuff, RxBuff>, signals_handler: SH,
