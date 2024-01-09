@@ -8,8 +8,6 @@ use core::fmt;
 
 pub struct WriteTo<'a> {
     buffer: &'a mut [u8],
-    // on write error (i.e. not enough space in buffer) this grows beyond
-    // `buffer.len()`.
     used: usize,
 }
 

@@ -1,6 +1,5 @@
 #![deny(unsafe_code)]
 
-
 use embedded_dma::ReadBuffer;
 use crate::errors::Errors;
 use crate::hal_ext::rtc_wrapper::RelativeMillis;

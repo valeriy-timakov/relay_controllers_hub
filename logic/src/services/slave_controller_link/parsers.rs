@@ -1033,14 +1033,11 @@ mod tests {
     #[test]
     fn test_response_body_parser_parse_on_all_data() {
         let mut rng = rand::thread_rng();
-        let count = 3;//rng.gen_range(0..MAX_RELAYS_COUNT);
+        let count = rng.gen_range(0..MAX_RELAYS_COUNT);
         let mut data_object = AllData::new(rng.next_u32(),  rng.gen_range(0..count));
-        // for _ in 0..count {
-        //     data_object.add(rng.gen_range(0..u8::MAX), rng.gen_range(0..u8::MAX), rng.gen_range(0..u8::MAX), rng.gen_range(0..16));
-        data_object.add(0,1,2,3);
-        data_object.add(4,5,6,7);
-        data_object.add(8,9,10,11);
-        // }
+        for _ in 0..count {
+            data_object.add(rng.gen_range(0..u8::MAX), rng.gen_range(0..u8::MAX), rng.gen_range(0..u8::MAX), rng.gen_range(0..16));
+        }
         let mut buffer = unsafe { Buffer::new(&mut BUFFER_ARR ) };
         data_object.serialize(&mut buffer);
 
@@ -1176,7 +1173,6 @@ mod tests {
 
         fn parse(&self, instruction: DataInstructionCodes, data: &[u8]) -> Result<DataInstructions, Errors> {
             *self.parse_params.borrow_mut() = Some(data.to_vec());
-            //self.parse_result
             Err(Errors::DataCorrupted)
         }
     }

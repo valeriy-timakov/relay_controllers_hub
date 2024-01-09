@@ -164,9 +164,6 @@ pub enum DataInstructions {
 }
 
 impl DataInstructions {
-    // fn discriminant(&self) -> u8 {
-    //     unsafe { *(self as *const Self as *const u8) }
-    // }
 
     pub fn code(&self) -> DataInstructionCodes {
         match self {
@@ -230,10 +227,6 @@ impl DataInstructions {
             }
         }
     }
-
-    // pub fn parse_data(data: &[u8]) -> Result<Self, Errors> {
-    //     Data::parse(data).map(|data| Conversation::Data(data)).map(|data| { Self(data) })
-    // }
 
     pub fn parse_from(&mut self, data: &[u8]) -> Result<(), Errors> {
         match self {
@@ -636,45 +629,24 @@ pub struct RelativeSeconds8(u8);
 pub struct RelativeSeconds16(u16);
 
 impl Extractor for RelativeMillis16 {
-
     #[inline(always)]
     fn extract(data: &[u8]) -> RelativeMillis16 {
         RelativeMillis16(u16::extract(data))
     }
-
-    // #[inline(always)]
-    // fn serialize<B: BufferWriter>(&self, buffer: &mut B) -> Result<(), Errors> {
-    //     buffer.add_u16(self.0)
-    // }
-
 }
 
 impl Extractor for RelativeSeconds8 {
-
     #[inline(always)]
     fn extract(data: &[u8]) -> RelativeSeconds8 {
         RelativeSeconds8(u8::extract(data))
     }
-
-    // #[inline(always)]
-    // fn serialize<B: BufferWriter>(&self, buffer: &mut B) -> Result<(), Errors> {
-    //     buffer.add_u8(self.0)
-    // }
-
 }
 
 impl Extractor for RelativeSeconds16 {
-
     #[inline(always)]
     fn extract(data: &[u8]) -> RelativeSeconds16 {
         RelativeSeconds16(u16::extract(data))
     }
-
-    // #[inline(always)]
-    // fn serialize<B: BufferWriter>(&self, buffer: &mut B) -> Result<(), Errors> {
-    //     buffer.add_u16(self.0)
-    // }
-
 }
 
 impl Extractor for BitsU64 {

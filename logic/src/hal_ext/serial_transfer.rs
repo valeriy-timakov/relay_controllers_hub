@@ -571,9 +571,6 @@ mod tests {
         let curr_buff_num = mock.borrow().curr_buf.as_ref().unwrap().number;
         let next_buff_num = rx_transfer.back_buffer.as_ref().unwrap().number;
 
-        //
-        // assert_eq!(next_buff_num, mock.borrow().curr_buf.as_ref().unwrap().number);
-
         let res = rx_transfer.on_rx_transfer_interrupt(|_| {
             callback = true;
             Ok(())
