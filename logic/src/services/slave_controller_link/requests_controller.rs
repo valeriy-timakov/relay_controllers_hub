@@ -1,11 +1,10 @@
 #![deny(unsafe_code)]
 
 
-use core::marker::PhantomData;
 use crate::errors::Errors;
 use crate::hal_ext::rtc_wrapper::{RelativeMillis };
-use crate::services::slave_controller_link::domain::{DataInstructionCodes, DataInstructions, ErrorCode, Operation, OperationCodes, Version};
-use crate::services::slave_controller_link::parsers::{ResponseParser, ResponsePayload, ResponseBodyParser, ResponsePayloadParsed, ResponsePostParser};
+use crate::services::slave_controller_link::domain::{DataInstructionCodes, DataInstructions, ErrorCode, Operation, Version};
+use crate::services::slave_controller_link::parsers::{ResponseParser, ResponseBodyParser, ResponseData};
 
 const MAX_REQUESTS_COUNT: usize = 4;
 
@@ -28,12 +27,12 @@ impl SentRequest {
     }
 }
 
-pub trait ResponseHandler<RPP: ResponsePostParser,> {
+pub trait ResponseHandler {
     fn on_request_success(&mut self, request: SentRequest);
     fn on_request_response(&mut self, request: SentRequest, response: DataInstructions);
     fn on_request_error(&mut self, request: SentRequest, error_code: ErrorCode);
     fn on_request_parse_error(&mut self, request: Option<SentRequest>, error: Errors, data: &[u8]);
-    fn on_request_search_error(&mut self, payload: RPP, error: Errors);
+    fn on_request_search_error(&mut self, payload: ResponseData, error: Errors);
 }
 
 pub trait RequestsControllerTx {
@@ -41,22 +40,19 @@ pub trait RequestsControllerTx {
     fn check_request(&mut self, instruction: DataInstructionCodes) -> Result<Option<u32>, Errors>;
 }
 
-pub trait RequestsControllerRx<RP, RBP, RPP>
+pub trait RequestsControllerRx<RP>
     where
-        RP: ResponseParser<RBP, RPP>,
-        RBP: ResponseBodyParser,
-        RPP: ResponsePostParser,
+        RP: ResponseParser,
 {
     fn process_response(&mut self, payload: RP, data: &[u8]);
 }
 
 
 
-pub struct RequestsController<RH, RBP, RPP>
+pub struct RequestsController<RH, RBP>
     where
-        RH: ResponseHandler<RPP>,
+        RH: ResponseHandler,
         RBP: ResponseBodyParser,
-        RPP: ResponsePostParser,
 {
     sent_requests: [Option<SentRequest>; MAX_REQUESTS_COUNT],
     requests_count: usize,
@@ -64,16 +60,15 @@ pub struct RequestsController<RH, RBP, RPP>
     response_handler: RH,
     response_body_parser: RBP,
     last_request_id: u32,
-    _phantom: PhantomData<RPP>,
+    slave_controller_version: Version,
 }
 
-impl <RH, RBP, RPP> RequestsController<RH, RBP, RPP>
+impl <RH, RBP> RequestsController<RH, RBP>
     where
-        RH: ResponseHandler<RPP>,
+        RH: ResponseHandler,
         RBP: ResponseBodyParser,
-        RPP: ResponsePostParser,
 {
-    pub fn new(response_handler: RH, response_body_parser: RBP) -> Self {
+    pub fn new(response_handler: RH, response_body_parser: RBP, slave_controller_version: Version,) -> Self {
         Self {
             sent_requests: [None, None, None, None],
             requests_count: 0,
@@ -81,16 +76,15 @@ impl <RH, RBP, RPP> RequestsController<RH, RBP, RPP>
             response_handler,
             response_body_parser,
             last_request_id: 0,
-            _phantom: PhantomData,
+            slave_controller_version,
         }
     }
 }
 
-impl <RH, RBP, RPP> RequestsControllerTx for RequestsController<RH, RBP, RPP>
+impl <RH, RBP> RequestsControllerTx for RequestsController<RH, RBP>
     where
-        RH: ResponseHandler<RPP>,
+        RH: ResponseHandler,
         RBP: ResponseBodyParser,
-        RPP: ResponsePostParser,
 {
 
     fn check_request(&mut self, instruction_code: DataInstructionCodes) -> Result<Option<u32>, Errors> {
@@ -101,7 +95,7 @@ impl <RH, RBP, RPP> RequestsControllerTx for RequestsController<RH, RBP, RPP>
             return Err(Errors::RequestsNeedsCacheAlreadySent);
         }
 
-        if self.response_body_parser.slave_controller_version() == Version::V1 {
+        if self.slave_controller_version == Version::V1 {
             Ok(None)
         } else {
             self.last_request_id += 1;
@@ -119,17 +113,16 @@ impl <RH, RBP, RPP> RequestsControllerTx for RequestsController<RH, RBP, RPP>
 
 }
 
-impl <RH, RP, RBP, RPP> RequestsControllerRx<RP, RBP, RPP> for RequestsController<RH, RBP, RPP>
+impl <RH, RP, RBP> RequestsControllerRx<RP> for RequestsController<RH, RBP>
     where
-        RH: ResponseHandler<RPP>,
-        RP: ResponseParser<RBP, RPP>,
+        RH: ResponseHandler,
+        RP: ResponseParser,
         RBP: ResponseBodyParser,
-        RPP: ResponsePostParser,
 {
 
     fn process_response(&mut self, payload: RP, data: &[u8]) {
 
-        let (response, data) = match payload.parse(&self.response_body_parser, data) {
+        let (response, data) = match payload.parse(data, self.slave_controller_version) {
             Ok(response) => response,
             Err(error) => {
                 self.response_handler.on_request_parse_error(None, error, data);
@@ -186,28 +179,21 @@ impl <RH, RP, RBP, RPP> RequestsControllerRx<RP, RBP, RPP> for RequestsControlle
 
 #[cfg(test)]
 mod tests {
-    use alloc::boxed::Box;
-    use alloc::rc::Rc;
     use alloc::vec::Vec;
-    use core::cell::{Ref, RefCell};
-    use core::marker::PhantomData;
-    use core::ops::Deref;
+    use core::cell::RefCell;
     use super::*;
-    use quickcheck_macros::quickcheck;
-    use rand::distributions::uniform::SampleBorrow;
     use rand::prelude::*;
     use crate::errors::DMAError;
-    use crate::services::slave_controller_link::domain::{Conversation, Operation, Response};
-    use crate::services::slave_controller_link::parsers::{ ResponseBodyParserImpl};
+    use crate::services::slave_controller_link::domain::{Conversation, Operation};
 
 
     #[test]
     fn test_requests_controller_check_request_should_return_error_on_cache_overflow() {
         let mock_response_handler = MockResponsesHandler::new();
-        let mock_responses_parser = default_mock_parser(Version::V1);
+        let mock_responses_parser = default_mock_parser();
 
         let mut tested =
-            RequestsController::new(mock_response_handler, mock_responses_parser,);
+            RequestsController::new(mock_response_handler, mock_responses_parser, Version::V1);
         tested.requests_count = MAX_REQUESTS_COUNT;
 
         for data_instruction_code in ADD_DATA_INSTRUCTION_CODES {
@@ -220,11 +206,10 @@ mod tests {
     #[test]
     fn test_requests_controller_check_request_should_return_error_on_needed_cache_request_send_duplication() {
         let mock_response_handler = MockResponsesHandler::new();
-        let mock_responses_parser = new_check_needs_cache(true,
-                                                          Version::V1);
+        let mock_responses_parser = new_check_needs_cache(true);
 
         let mut tested =
-            RequestsController::new(mock_response_handler, mock_responses_parser);
+            RequestsController::new(mock_response_handler, mock_responses_parser,Version::V1);
         tested.request_needs_cache_send = true;
 
         for data_instruction_code in ADD_DATA_INSTRUCTION_CODES {
@@ -238,10 +223,10 @@ mod tests {
     fn test_requests_controller_check_request_success_v1() {
         let mock_response_handler = MockResponsesHandler::new();
         let mock_responses_parser =
-            new_check_needs_cache(false, Version::V1);
+            new_check_needs_cache(false);
 
         let mut tested =
-            RequestsController::new(mock_response_handler, mock_responses_parser);
+            RequestsController::new(mock_response_handler, mock_responses_parser, Version::V1);
 
         for data_instruction_code in ADD_DATA_INSTRUCTION_CODES {
             tested.request_needs_cache_send = false;
@@ -258,10 +243,10 @@ mod tests {
     fn test_requests_controller_check_request_success_v2() {
         let mock_response_handler = MockResponsesHandler::new();
         let mock_responses_parser =
-            new_check_needs_cache(false, Version::V2);
+            new_check_needs_cache(false);
 
         let mut tested =
-            RequestsController::new(mock_response_handler, mock_responses_parser);
+            RequestsController::new(mock_response_handler, mock_responses_parser, Version::V2);
 
         let mut count = 0_u32;
         for data_instruction_code in ADD_DATA_INSTRUCTION_CODES {
@@ -280,11 +265,10 @@ mod tests {
     #[test]
     fn test_requests_controller_add_sent_request() {
         let mock_response_handler = MockResponsesHandler::new();
-        let mock_responses_parser = new_check_needs_cache(false,
-                                                          Version::V1);
+        let mock_responses_parser = new_check_needs_cache(false);
 
         let mut tested =
-            RequestsController::new(mock_response_handler, mock_responses_parser);
+            RequestsController::new(mock_response_handler, mock_responses_parser, Version::V1);
 
         let mut rng = rand::thread_rng();
         let mut requests = [
@@ -352,11 +336,10 @@ mod tests {
     #[test]
     fn test_requests_controller_check_request_should_return_error_on_cache_overflow_outer() {
         let mock_response_handler = MockResponsesHandler::new();
-        let mock_responses_parser = new_check_needs_cache(false,
-                                                          Version::V1);
+        let mock_responses_parser = new_check_needs_cache(false);
 
         let mut tested =
-            RequestsController::new(mock_response_handler, mock_responses_parser);
+            RequestsController::new(mock_response_handler, mock_responses_parser, Version::V1);
         let mut rng = rand::thread_rng();
         let request = SentRequest::new (
             None, Operation::None, DataInstructionCodes::None,
@@ -381,11 +364,11 @@ mod tests {
         let parsed_data = [rng.gen(), rng.gen()].to_vec();
         let mock_response_body_parser: MockResponseBodyParserLight = MockResponseBodyParserLight::new(
             || Err(Errors::NoRequestsFound), false,
-            Ok(Some(0)), Version::V1
+            Ok(Some(0))
         );
 
         let mut tested =
-            RequestsController::new(mock_response_handler, mock_response_body_parser);
+            RequestsController::new(mock_response_handler, mock_response_body_parser, Version::V1);
 
         let request = SentRequest::new (
             None, operation, instruction,
@@ -402,9 +385,8 @@ mod tests {
         }
 
         let mock_response_parser = MockResponseParserLight::new(
-            Ok(MockResponsePostParser::new(
-                operation, instruction, None, false,
-                ErrorCode::OK, parsed_data.to_vec())) );
+            Ok(ResponseData::new(
+                operation, instruction, None, ErrorCode::OK)) );
 
         tested.process_response(mock_response_parser, parsed_data.as_slice());
         tested.response_body_parser.request_needs_cache_result = false;
@@ -418,9 +400,8 @@ mod tests {
         }
 
         let mock_response_parser = MockResponseParserLight::new(
-            Ok(MockResponsePostParser::new(
-                operation, instruction, None, false,
-                 ErrorCode::OK, parsed_data.to_vec())) );
+            Ok(ResponseData::new(
+                operation, instruction, None, ErrorCode::OK)) );
         tested.process_response(mock_response_parser, parsed_data.as_slice());
         tested.response_body_parser.request_needs_cache_result = true;
         tested.add_sent_request(request);
@@ -434,9 +415,8 @@ mod tests {
 
 
         let mock_response_parser = MockResponseParserLight::new(
-            Ok(MockResponsePostParser::new(
-                operation, instruction, None, false,
-                ErrorCode::OK, parsed_data.to_vec())) );
+            Ok(ResponseData::new(
+                operation, instruction, None, ErrorCode::OK)) );
 
         tested.process_response(mock_response_parser, parsed_data.as_slice());
         tested.response_body_parser.request_needs_cache_result = true;
@@ -461,19 +441,16 @@ mod tests {
             }
 
             let mock_responses_parser = new_check_needs_cache(
-                false, Version::V1);
+                false);
             let mock_response_handler = MockResponsesHandler::new();
 
             let error = Errors::DataCorrupted;
 
             let mut tested =
-                RequestsController::new(mock_response_handler, mock_responses_parser);
+                RequestsController::new(mock_response_handler, mock_responses_parser, Version::V1);
 
             let response_body_parser_id  = tested.response_body_parser.id;
-            let mock_response_parser = MockResponseParser::new(
-                Err(error), |rbp| {
-                    assert_eq!(response_body_parser_id, rbp.id);
-                });
+            let mock_response_parser = MockResponseParser::new(Err(error));
 
 
             tested.process_response(mock_response_parser, data.as_slice());
@@ -502,20 +479,16 @@ mod tests {
 
         let mock_responses_parser = MockResponseBodyParser::new(
             || Err(Errors::NoRequestsFound), false,
-            Err(Errors::NotEnoughDataGot), Version::V1
+            Err(Errors::NotEnoughDataGot)
         );
         let mock_response_handler = MockResponsesHandler::new();
 
         let mut tested =
-            RequestsController::new(mock_response_handler, mock_responses_parser);
+            RequestsController::new(mock_response_handler, mock_responses_parser, Version::V1);
 
         let response_body_parser_id  = tested.response_body_parser.id;
-        let mrpp = MockResponsePostParser::new(operation, instruction, None,
-                       false, ErrorCode::OK, data.to_vec());
-        let mock_response_parser = MockResponseParser::new(
-            Ok(mrpp.clone()), |rbp| {
-                assert_eq!(response_body_parser_id, rbp.id);
-            });
+        let mrpp = ResponseData::new(operation, instruction, None, ErrorCode::OK);
+        let mock_response_parser = MockResponseParser::new(Ok(mrpp.clone()));
 
         tested.process_response(mock_response_parser, &data);
 
@@ -543,20 +516,16 @@ mod tests {
 
         let mock_responses_parser = MockResponseBodyParser::new(
             || Err(Errors::NotEnoughDataGot), false,
-            Err(Errors::NotEnoughDataGot), Version::V1
+            Err(Errors::NotEnoughDataGot)
         );
         let mock_response_handler = MockResponsesHandler::new();
 
         let mut tested =
-            RequestsController::new(mock_response_handler, mock_responses_parser);
+            RequestsController::new(mock_response_handler, mock_responses_parser, Version::V1);
 
         let response_body_parser_id  = tested.response_body_parser.id;
-        let mrpp = MockResponsePostParser::new(operation, instruction, None,
-                                               false, ErrorCode::OK, data.to_vec());
-        let mock_response_parser = MockResponseParser::new(
-            Ok(mrpp.clone()), |rbp| {
-                assert_eq!(response_body_parser_id, rbp.id);
-            });
+        let mrpp = ResponseData::new(operation, instruction, None, ErrorCode::OK);
+        let mock_response_parser = MockResponseParser::new(Ok(mrpp.clone()));
 
 
         tested.add_sent_request(SentRequest::new(
@@ -589,23 +558,19 @@ mod tests {
 
         let mock_responses_parser = MockResponseBodyParser::new(
             || Err(Errors::NotEnoughDataGot), false,
-            Err(Errors::NotEnoughDataGot), Version::V1
+            Err(Errors::NotEnoughDataGot)
         );
         let mock_response_handler = MockResponsesHandler::new();
 
         let mut tested =
-            RequestsController::new(mock_response_handler, mock_responses_parser);
+            RequestsController::new(mock_response_handler, mock_responses_parser, Version::V1);
 
         let request = SentRequest::new(
             None, operation, instruction, RelativeMillis::new(rng.next_u32()));
 
         let response_body_parser_id  = tested.response_body_parser.id;
-        let mrpp = MockResponsePostParser::new(operation, instruction, None,
-                                               false, ErrorCode::OK, data.to_vec());
-        let mock_response_parser = MockResponseParser::new(
-            Ok(mrpp.clone()), |rbp| {
-                assert_eq!(response_body_parser_id, rbp.id);
-            });
+        let mrpp = ResponseData::new(operation, instruction, None, ErrorCode::OK);
+        let mock_response_parser = MockResponseParser::new(Ok(mrpp.clone()));
 
         tested.add_sent_request(request);
         *tested.response_body_parser.request_needs_cache_param.borrow_mut() = None;
@@ -638,24 +603,19 @@ mod tests {
         let parse_response_result_producer = || Ok(DataInstructions::Id(Conversation::Data(123)));
 
         let mock_responses_parser = MockResponseBodyParser::new(
-            parse_response_result_producer, false, Err(Errors::NotEnoughDataGot),
-            Version::V1
+            parse_response_result_producer, false, Err(Errors::NotEnoughDataGot)
         );
         let mock_response_handler = MockResponsesHandler::new();
 
         let mut tested =
-            RequestsController::new(mock_response_handler, mock_responses_parser);
+            RequestsController::new(mock_response_handler, mock_responses_parser,Version::V1);
 
         let request = SentRequest::new(
             None, operation, instruction, RelativeMillis::new(rng.next_u32()));
 
         let response_body_parser_id  = tested.response_body_parser.id;
-        let mrpp = MockResponsePostParser::new(operation, instruction, None,
-                                               false, ErrorCode::OK, data.to_vec());
-        let mock_response_parser = MockResponseParser::new(
-            Ok(mrpp.clone()), |rbp| {
-                assert_eq!(response_body_parser_id, rbp.id);
-            });
+        let mrpp = ResponseData::new(operation, instruction, None, ErrorCode::OK);
+        let mock_response_parser = MockResponseParser::new(Ok(mrpp.clone()));
 
         tested.add_sent_request(request);
         *tested.response_body_parser.request_needs_cache_param.borrow_mut() = None;
@@ -692,20 +652,16 @@ mod tests {
 
         let mock_responses_parser = MockResponseBodyParser::new(
             parse_response_result_producer, false,
-            Err(body_parse_error), Version::V1
+            Err(body_parse_error)
         );
         let mock_response_handler = MockResponsesHandler::new();
 
         let mut tested =
-            RequestsController::new(mock_response_handler, mock_responses_parser);
+            RequestsController::new(mock_response_handler, mock_responses_parser, Version::V1);
 
         let response_body_parser_id  = tested.response_body_parser.id;
-        let mrpp = MockResponsePostParser::new(operation, instruction, None,
-                                               false, ErrorCode::OK, data.to_vec());
-        let mock_response_parser = MockResponseParser::new(
-            Ok(mrpp.clone()), |rbp| {
-                assert_eq!(response_body_parser_id, rbp.id);
-            });
+        let mrpp = ResponseData::new(operation, instruction, None, ErrorCode::OK);
+        let mock_response_parser = MockResponseParser::new(Ok(mrpp.clone()));
 
         let request = SentRequest::new(
             None, operation, instruction, RelativeMillis::new(rng.next_u32()));
@@ -741,20 +697,16 @@ mod tests {
 
         let mock_responses_parser = MockResponseBodyParser::new(
             parse_response_result_producer, false,
-            Err(Errors::NotEnoughDataGot), Version::V1
+            Err(Errors::NotEnoughDataGot)
         );
         let mock_response_handler = MockResponsesHandler::new();
 
         let mut tested =
-            RequestsController::new(mock_response_handler, mock_responses_parser);
+            RequestsController::new(mock_response_handler, mock_responses_parser, Version::V1);
 
         let response_body_parser_id  = tested.response_body_parser.id;
-        let mrpp = MockResponsePostParser::new(operation, instruction, None,
-                                               false, error_code, data.to_vec());
-        let mock_response_parser = MockResponseParser::new(
-            Ok(mrpp.clone()), |rbp| {
-                assert_eq!(response_body_parser_id, rbp.id);
-            });
+        let mrpp = ResponseData::new(operation, instruction, None, error_code);
+        let mock_response_parser = MockResponseParser::new(Ok(mrpp.clone()));
 
         let request = SentRequest::new(
             None, Operation::Read, instruction, RelativeMillis::new(rng.next_u32()));
@@ -864,7 +816,7 @@ mod tests {
         on_request_error_params: Option<(SentRequest, ErrorCode)>,
         on_request_parse_error_params: Option<(Option<SentRequest>, Errors, Vec<u8>)>,
         on_request_response_params: Option<(SentRequest, DataInstructions)>,
-        on_request_search_error_params: Option<(MockResponsePostParser, Errors)>,
+        on_request_search_error_params: Option<(ResponseData, Errors)>,
     }
 
     impl MockResponsesHandler {
@@ -883,7 +835,7 @@ mod tests {
         fn id(&self) -> u32;
     }
 
-    impl ResponseHandler<MockResponsePostParser> for MockResponsesHandler {
+    impl ResponseHandler for MockResponsesHandler {
         fn on_request_success(&mut self, request: SentRequest) {
             self.on_request_success_params = Some(request);
         }
@@ -900,20 +852,20 @@ mod tests {
             self.on_request_parse_error_params = Some((request, error, data.to_vec()));
         }
 
-        fn on_request_search_error(&mut self, payload: MockResponsePostParser, error: Errors) {
+        fn on_request_search_error(&mut self, payload: ResponseData, error: Errors) {
             self.on_request_search_error_params = Some((payload, error));
         }
     }
 
     type MyRbpCb = fn() -> Result<DataInstructions, Errors>;
 
-    fn new_check_needs_cache(request_needs_cache_result: bool, ctrl_version: Version) -> MockResponseBodyParser<MyRbpCb> {
+    fn new_check_needs_cache(request_needs_cache_result: bool) -> MockResponseBodyParser<MyRbpCb> {
         let cb = || Err(Errors::NoRequestsFound);
         MockResponseBodyParser::new(cb,
-            request_needs_cache_result, Ok(Some(0)), ctrl_version)
+            request_needs_cache_result, Ok(Some(0)))
     }
 
-    fn default_mock_parser(slave_controller_version_result: Version) -> MockResponseBodyParser<MyRbpCb> {
+    fn default_mock_parser() -> MockResponseBodyParser<MyRbpCb> {
 
         let mut rng = rand::thread_rng();
         let version = if rng.gen_range(0..2) == 0 { Version::V1 } else { Version::V2 };
@@ -921,7 +873,7 @@ mod tests {
 
         let cb = || Err(Errors::NoRequestsFound);
         MockResponseBodyParser::new(cb,
-            false, Ok(Some(0)), slave_controller_version_result)
+            false, Ok(Some(0)))
     }
 
     struct MockResponseBodyParser<CB: Fn() -> Result<DataInstructions, Errors>> {
@@ -931,14 +883,13 @@ mod tests {
         request_needs_cache_result: bool,
         parse_id_param: RefCell<Option<Vec<u8>>>,
         parse_id_result: Result<Option<u32>, Errors>,
-        slave_controller_version_result: Version,
         id: u32,
     }
 
     impl <CB: Fn() -> Result<DataInstructions, Errors>> MockResponseBodyParser<CB> {
         pub fn new(
             parse_response_result_producer: CB, request_needs_cache_result: bool,
-            parse_id_result: Result<Option<u32>, Errors>, slave_controller_version_result: Version,
+            parse_id_result: Result<Option<u32>, Errors>,
         ) -> Self {
             let mut rng = rand::thread_rng();
             Self {
@@ -948,7 +899,6 @@ mod tests {
                 request_needs_cache_result,
                 parse_id_param: RefCell::new(None),
                 parse_id_result,
-                slave_controller_version_result,
                 id: rng.gen_range(1..u32::MAX),
             }
         }
@@ -961,18 +911,9 @@ mod tests {
             self.request_needs_cache_result
         }
 
-        fn parse_id<'a>(&self, data: &'a[u8]) -> Result<(Option<u32>, &'a[u8]), Errors> {
-            *self.parse_id_param.borrow_mut() = Some(data.to_vec());
-            self.parse_id_result.map(|id| (id, data))
-        }
-
         fn parse(&self, instruction: DataInstructionCodes, data: &[u8]) -> Result<DataInstructions, Errors> {
             *self.parse_response_params.borrow_mut() = Some((instruction as u8, data.to_vec()));
             (self.parse_response_result_producer)()
-        }
-
-        fn slave_controller_version(&self) -> Version {
-            self.slave_controller_version_result
         }
 
     }
@@ -983,49 +924,13 @@ mod tests {
         }
     }
 
-    #[derive(Clone, Debug, PartialEq)]
-    struct MockResponsePostParser {
-        operation: Operation,
-        instruction: DataInstructionCodes,
-        request_id: Option<u32>,
-        needs_cache: bool,
-        error_code: ErrorCode,
-        data: Vec<u8>,
-    }
-
-    impl MockResponsePostParser {
-
-        fn new(operation: Operation, instruction: DataInstructionCodes, request_id: Option<u32>, needs_cache: bool,
-               error_code: ErrorCode, data: Vec<u8>) -> Self {
-            Self {operation, instruction, request_id, needs_cache, error_code, data}
-        }
-    }
-
-    impl ResponsePostParser for MockResponsePostParser {
-        fn operation(&self) -> Operation {
-            self.operation
-        }
-        fn instruction(&self) -> DataInstructionCodes {
-            self.instruction
-        }
-        fn request_id(&self) -> Option<u32> {
-            self.request_id
-        }
-        fn needs_cache(&self) -> bool {
-            self.needs_cache
-        }
-        fn error_code(&self) -> ErrorCode {
-            self.error_code
-        }
-    }
-
     struct MockResponseParserLight{
-        parse_result: Result<MockResponsePostParser, Errors>,
+        parse_result: Result<ResponseData, Errors>,
         id: u32,
     }
 
     impl MockResponseParserLight{
-        fn new(parse_result: Result<MockResponsePostParser, Errors>) -> Self {
+        fn new(parse_result: Result<ResponseData, Errors>) -> Self {
             let mut rng = rand::thread_rng();
             Self {
                 parse_result,
@@ -1036,9 +941,9 @@ mod tests {
 
     type MockResponseBodyParserLight = MockResponseBodyParser<fn() -> Result<DataInstructions, Errors>>;
 
-    impl ResponseParser<MockResponseBodyParserLight, MockResponsePostParser> for MockResponseParserLight {
+    impl ResponseParser for MockResponseParserLight {
 
-        fn parse<'a>(&self, body_parser: &MockResponseBodyParserLight, data: &'a[u8]) -> Result<(MockResponsePostParser, &'a[u8]), Errors> {
+        fn parse<'a>(&self, data: &'a[u8], slave_controller_version: Version) -> Result<(ResponseData, &'a[u8]), Errors> {
             self.parse_result.as_ref()
                 .map(|res| {
                     (res.clone(), data)
@@ -1047,50 +952,29 @@ mod tests {
         }
     }
 
-    struct MockResponseParser<CB, CB2>
-        where
-            CB: Fn(&MockResponseBodyParser<CB2>),
-            CB2: Fn() -> Result<DataInstructions, Errors>
-    {
-        parse_result: Result<MockResponsePostParser, Errors>,
-        check_parse_callback: CB,
+    struct MockResponseParser {
+        parse_result: Result<ResponseData, Errors>,
         id: u32,
-        _rbp: PhantomData<CB2>,
     }
 
-    impl <CB, CB2> MockResponseParser<CB, CB2>
-        where
-            CB: Fn(&MockResponseBodyParser<CB2>),
-            CB2: Fn() -> Result<DataInstructions, Errors>
-    {
-        fn new(parse_result: Result<MockResponsePostParser, Errors>, check_parse_param: CB) -> Self {
+    impl MockResponseParser{
+        fn new(parse_result: Result<ResponseData, Errors>) -> Self {
             let mut rng = rand::thread_rng();
             Self {
                 parse_result,
-                check_parse_callback: check_parse_param,
                 id: rng.gen_range(1..u32::MAX),
-                _rbp: PhantomData,
             }
         }
     }
 
-    impl <CB, CB2> IdContainer for MockResponseParser<CB, CB2>
-        where
-            CB: Fn(&MockResponseBodyParser<CB2>),
-            CB2: Fn() -> Result<DataInstructions, Errors>
-    {
+    impl IdContainer for MockResponseParser {
         fn id(&self) -> u32 {
             self.id
         }
     }
 
-    impl <CB, CB2>  ResponseParser<MockResponseBodyParser<CB2>, MockResponsePostParser> for MockResponseParser<CB, CB2>
-        where
-            CB: Fn(&MockResponseBodyParser<CB2>),
-            CB2: Fn() -> Result<DataInstructions, Errors>
-    {
-        fn parse<'a>(&self, body_parser: &MockResponseBodyParser<CB2>, data: &'a[u8]) -> Result<(MockResponsePostParser, &'a[u8]), Errors> {
-            (self.check_parse_callback)(body_parser);
+    impl ResponseParser for MockResponseParser {
+        fn parse<'a>(&self, data: &'a[u8], slave_controller_version: Version) -> Result<(ResponseData, &'a[u8]), Errors> {
             self.parse_result.as_ref()
                 .map(|res| {
                     (res.clone(), data)

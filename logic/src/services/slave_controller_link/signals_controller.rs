@@ -1,14 +1,14 @@
 #![deny(unsafe_code)]
 
 use crate::errors::Errors;
-use crate::services::slave_controller_link::domain::Signals;
-use crate::services::slave_controller_link::parsers::{ SignalParser, SignalParseResult };
+use crate::services::slave_controller_link::domain::SignalData;
+use crate::services::slave_controller_link::parsers::SignalParser;
 
 
 pub trait SignalsHandler {
-    fn on_signal(&mut self, signal_data: SignalParseResult);
+    fn on_signal(&mut self, signal_data: SignalData);
     fn on_signal_parse_error(&mut self, error: Errors, sent_to_slave_success: bool, data: &[u8]);
-    fn on_signal_process_error(&mut self, error: Errors, sent_to_slave_success: bool, data: SignalParseResult);
+    fn on_signal_process_error(&mut self, error: Errors, sent_to_slave_success: bool, data: SignalData);
 }
 
 pub trait SignalController<SP: SignalParser> {
@@ -55,6 +55,7 @@ mod tests {
     use core::cell::{ RefCell};
     use super::*;
     use rand::prelude::*;
+    use crate::services::slave_controller_link::domain::SignalData;
 
 
     #[test]
@@ -80,7 +81,7 @@ mod tests {
         let mut signal_controller =
             SignalControllerImpl::new( MockSignalsHandler::new());
         let mut rng = rand::thread_rng();
-        let result = SignalParseResult::new(Signals::MonitoringStateChanged, None);
+        let result = SignalData::GetTimeStamp;
         let data = [0_u8, rng.gen(), rng.gen(), rng.gen()];
         let mock_signal_parser = MockSignalParser::new(Ok(result));
 
@@ -93,9 +94,9 @@ mod tests {
 
 
     struct MockSignalsHandler {
-        on_signal_signal_data: Option<SignalParseResult>,
+        on_signal_signal_data: Option<SignalData>,
         on_signal_error_params: Option<(Errors, bool, Vec<u8>)>,
-        on_signal_process_error: Option<(Errors, bool, SignalParseResult)>,
+        on_signal_process_error: Option<(Errors, bool, SignalData)>,
     }
 
     impl MockSignalsHandler {
@@ -109,14 +110,14 @@ mod tests {
     }
 
     impl SignalsHandler for MockSignalsHandler {
-        fn on_signal(&mut self, signal_data: SignalParseResult) {
+        fn on_signal(&mut self, signal_data: SignalData) {
             self.on_signal_signal_data = Some(signal_data);
         }
         fn on_signal_parse_error(&mut self, error: Errors, sent_to_slave_success: bool, data: &[u8]) {
             self.on_signal_error_params = Some((error, sent_to_slave_success, data.to_vec()));
         }
 
-        fn on_signal_process_error(&mut self, error: Errors, sent_to_slave_success: bool, data: SignalParseResult) {
+        fn on_signal_process_error(&mut self, error: Errors, sent_to_slave_success: bool, data: SignalData) {
             self.on_signal_process_error = Some((error, sent_to_slave_success, data));
         }
 
@@ -124,25 +125,25 @@ mod tests {
     }
 
     impl SignalsHandler for Rc<RefCell<MockSignalsHandler>> {
-        fn on_signal(&mut self, signal_data: SignalParseResult) {
+        fn on_signal(&mut self, signal_data: SignalData) {
             self.borrow_mut().on_signal(signal_data);
         }
         fn on_signal_parse_error(&mut self, error: Errors, sent_to_slave_success: bool, data: &[u8]) {
             self.borrow_mut().on_signal_parse_error(error, sent_to_slave_success, data);
         }
 
-        fn on_signal_process_error(&mut self, error: Errors, sent_to_slave_success: bool, data: SignalParseResult) {
+        fn on_signal_process_error(&mut self, error: Errors, sent_to_slave_success: bool, data: SignalData) {
             self.borrow_mut().on_signal_process_error(error, sent_to_slave_success, data);
         }
     }
 
     struct MockSignalParser {
-        parse_result: Result<SignalParseResult, Errors>,
+        parse_result: Result<SignalData, Errors>,
         parse_params: RefCell<Option<Vec<u8>>>,
     }
 
     impl MockSignalParser {
-        pub fn new(parse_result: Result<SignalParseResult, Errors>) -> Self {
+        pub fn new(parse_result: Result<SignalData, Errors>) -> Self {
             Self {
                 parse_result,
                 parse_params: RefCell::new(None)
@@ -151,7 +152,7 @@ mod tests {
     }
 
     impl SignalParser for MockSignalParser {
-            fn parse(&self, data: &[u8]) -> Result<SignalParseResult, Errors> {
+            fn parse(&self, data: &[u8]) -> Result<SignalData, Errors> {
                 *self.parse_params.borrow_mut() = Some(data.to_vec());
                 self.parse_result
             }

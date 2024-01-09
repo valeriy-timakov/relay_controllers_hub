@@ -1,6 +1,6 @@
 #![deny(unsafe_code)]
 
-use crate::services::slave_controller_link::domain::Operation;
+use crate::services::slave_controller_link::domain::{ErrorCode, Operation};
 
 
 #[derive(Debug, PartialEq, Copy, Clone)]
@@ -12,6 +12,7 @@ pub enum Errors {
     NotEnoughDataGot,
     OperationNotRecognized(u8),
     InstructionNotRecognized(u8),
+    SlaveError(ErrorCode),
     DataCorrupted,
     DmaError(DMAError<()>),
     RequestsLimitReached,
@@ -30,6 +31,7 @@ pub enum Errors {
     WrongStateNotParsed,
     WrongStateIncompatibleOperation(Operation),
     WrongIncomingOperation(Operation),
+    DataOverflow,
 }
 
 #[derive(Debug, PartialEq, Copy, Clone)]

@@ -2,7 +2,6 @@
 
 use embedded_dma::{ReadBuffer, WriteBuffer};
 use crate::errors::{DMAError, Errors};
-use core::marker::PhantomData;
 use crate::utils::dma_read_buffer::BufferWriter;
 
 pub trait Decomposable<T>

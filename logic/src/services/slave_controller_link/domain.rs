@@ -1,13 +1,13 @@
 #![allow(unsafe_code)]
 
 use crate::errors::Errors;
-use crate::hal_ext::rtc_wrapper::{ RelativeSeconds };
+use crate::hal_ext::rtc_wrapper::{RelativeSeconds};
 use crate::utils::{BitsU64, BitsU8};
-use crate::utils::dma_read_buffer::{Buffer, BufferWriter};
+use crate::utils::dma_read_buffer::{BufferWriter};
 
 
-pub const MAX_RELAYS_COUNT: usize = 16;
-pub const SWITCHES_DATA_BUFFER_SIZE: usize = 50;
+pub const MAX_RELAYS_COUNT: u8 = 16;
+pub const SWITCHES_DATA_BUFFER_SIZE: u8 = 50;
 
 
 #[repr(u8)]
@@ -53,37 +53,6 @@ pub enum Version {
     V1,
     V2,
 }
-
-#[repr(u8)]
-#[derive(Copy, Clone, PartialEq, Debug)]
-pub enum Signals {
-    None = 0x00,
-    GetTimeStamp = 0x14,
-    RelayStateChanged = 0x15,
-    MonitoringStateChanged = 0x16,
-    ControlStateChanged = 0x17,
-    StateFixTry = 0x19,
-    Unknown = 0xff,
-}
-
-impl Signals {
-    pub fn get(signal_code: u8) -> Result<Signals, Errors> {
-        if signal_code == Signals::MonitoringStateChanged as u8 {
-            Ok(Signals::MonitoringStateChanged)
-        } else if signal_code == Signals::StateFixTry as u8 {
-            Ok(Signals::StateFixTry)
-        } else if signal_code == Signals::ControlStateChanged as u8 {
-            Ok(Signals::ControlStateChanged)
-        } else if signal_code == Signals::RelayStateChanged as u8 {
-            Ok(Signals::RelayStateChanged)
-        } else if signal_code == Signals::GetTimeStamp as u8 {
-            Ok(Signals::GetTimeStamp)
-        } else {
-            Err(Errors::InstructionNotRecognized(signal_code))
-        }
-    }    
-}
-
 
 pub enum Commands {
     ClearSwitchCount = 0x08,
@@ -195,9 +164,9 @@ pub enum DataInstructions {
 }
 
 impl DataInstructions {
-    fn discriminant(&self) -> u8 {
-        unsafe { *(self as *const Self as *const u8) }
-    }
+    // fn discriminant(&self) -> u8 {
+    //     unsafe { *(self as *const Self as *const u8) }
+    // }
 
     pub fn code(&self) -> DataInstructionCodes {
         match self {
@@ -262,9 +231,9 @@ impl DataInstructions {
         }
     }
 
-    pub fn parse_data(&self, data: &[u8]) -> Result<Conversation<EmptyRequest, State>, Errors> {
-        self::Data::parse(data).map(|data| Conversation::Data(data))
-    }
+    // pub fn parse_data(data: &[u8]) -> Result<Self, Errors> {
+    //     Data::parse(data).map(|data| Conversation::Data(data)).map(|data| { Self(data) })
+    // }
 
     pub fn parse_from(&mut self, data: &[u8]) -> Result<(), Errors> {
         match self {
@@ -508,6 +477,8 @@ impl ErrorCode {
             ErrorCode::OK
         } else if code == ErrorCode::ERequestDataNoValue.discriminant() {
             ErrorCode::ERequestDataNoValue
+        } else if code == ErrorCode::EInstructionUnrecognized.discriminant() {
+            ErrorCode::EInstructionUnrecognized
         } else if code == ErrorCode::ECommandEmpty.discriminant() {
             ErrorCode::ECommandEmpty
         } else if code == ErrorCode::ECommandSizeOverflow.discriminant() {
@@ -530,6 +501,8 @@ impl ErrorCode {
             ErrorCode::EControlInterruptedPinNotAllowedValue
         } else if code == ErrorCode::ERelayNotAllowedPinUsed.discriminant() {
             ErrorCode::ERelayNotAllowedPinUsed
+        } else if code == ErrorCode::EInternalError.discriminant() {
+            ErrorCode::EInternalError
         } else {
             ErrorCode::EUndefinedCode(code)
         }
@@ -554,8 +527,11 @@ pub enum Conversation<RQ: Request, D: Data + 'static> {
 
 pub trait Request {  }
 
-pub trait Data {
+pub trait AutoCreator {
+    fn default() -> Self where Self: Sized;
+}
 
+pub trait Parser: AutoCreator {
     fn parse(data: &[u8]) -> Result<Self, Errors> where Self: Sized {
         let mut result = Self::default();
         result.parse_from(data)?;
@@ -563,12 +539,13 @@ pub trait Data {
     }
 
     fn parse_from(&mut self, data: &[u8]) -> Result<(), Errors>;
-
-    fn serialize<B: BufferWriter>(&self, buffer: &mut B)->Result<(), Errors>;
-
-    fn default() -> Self where Self: Sized;
-
 }
+
+pub trait Serializable {
+    fn serialize<B: BufferWriter>(&self, buffer: &mut B)->Result<(), Errors>;
+}
+
+pub trait Data : Parser + Serializable {}
 
 #[derive(PartialEq, Debug)]
 pub enum Response {
@@ -588,8 +565,7 @@ pub struct RelayIndexRequest {
 
 impl Request for RelayIndexRequest {}
 
-impl Data for RelativeSeconds {
-
+impl Parser for RelativeSeconds {
     fn parse(data: &[u8]) -> Result<Self, Errors> where Self: Sized {
         Ok(RelativeSeconds::new(u32::parse(data)?))
     }
@@ -598,18 +574,24 @@ impl Data for RelativeSeconds {
         *self = RelativeSeconds::new(u32::parse(data)?);
         Ok(())
     }
+}
 
+impl Serializable for RelativeSeconds {
 
     #[inline(always)]
     fn serialize<B: BufferWriter>(&self, buffer: &mut B) -> Result<(), Errors> {
         buffer.add_u32(self.value())
     }
 
+}
+
+impl AutoCreator for RelativeSeconds {
     fn default() -> Self where Self: Sized {
         RelativeSeconds::new(0)
     }
-
 }
+
+impl Data for RelativeSeconds {}
 
 pub trait Extractor {
     fn extract(data: &[u8]) -> Self;
@@ -702,7 +684,7 @@ impl Extractor for BitsU64 {
     }
 }
 
-impl Data for u8 {
+impl Parser for u8 {
 
     fn parse(data: &[u8]) -> Result<Self, Errors> where Self: Sized {
         if data.len() != 1 {
@@ -716,19 +698,26 @@ impl Data for u8 {
         *self = Self::parse(data)?;
         Ok(())
     }
+}
+
+impl Serializable for u8 {
 
     #[inline(always)]
     fn serialize<B: BufferWriter>(&self, buffer: &mut B) -> Result<(), Errors> {
         buffer.add_u8(*self)
     }
 
+}
+
+impl AutoCreator for u8 {
     fn default() -> Self where Self: Sized {
         0
     }
-
 }
 
-impl Data for u16 {
+impl Data for u8 {}
+
+impl Parser for u16 {
 
         fn parse(data: &[u8]) -> Result<Self, Errors> where Self: Sized {
             if data.len() == 2 {
@@ -742,19 +731,24 @@ impl Data for u16 {
             *self = Self::parse(data)?;
             Ok(())
         }
+}
 
+impl Serializable for u16 {
         #[inline(always)]
         fn serialize<B: BufferWriter>(&self, buffer: &mut B) -> Result<(), Errors> {
             buffer.add_u16(*self)
         }
-
-        fn default() -> Self where Self: Sized {
-            0
-        }
-
 }
 
-impl Data for u32 {
+impl AutoCreator for u16 {
+    fn default() -> Self where Self: Sized {
+        0
+    }
+}
+
+impl Data for u16 {}
+
+impl Parser for u32 {
 
     fn parse(data: &[u8]) -> Result<Self, Errors> where Self: Sized {
         if data.len() == 4 {
@@ -768,40 +762,59 @@ impl Data for u32 {
         *self = Self::parse(data)?;
         Ok(())
     }
+}
 
+impl Serializable for u32 {
     #[inline(always)]
     fn serialize<B: BufferWriter>(&self, buffer: &mut B) -> Result<(), Errors> {
         buffer.add_u32(*self)
     }
 
+}
+
+impl AutoCreator for u32 {
     fn default() -> Self where Self: Sized {
         0
     }
-
 }
+
+impl Data for u32 {}
 
 #[derive(PartialEq, Debug)]
 pub struct AllData {
     pub id: u32,
     pub interrupt_pin: u8,
     pub relays_count: u8,
-    pub relays_settings: [RelaySettings; MAX_RELAYS_COUNT],
+    pub relays_settings: [RelaySettings; MAX_RELAYS_COUNT as usize],
     pub state_data: BitsU64,
 }
 
 impl AllData {
-    pub const fn new() -> Self {
+    pub fn new(id: u32, interrupt_pin: u8) -> Self {
         Self {
-            id: 0,
-            interrupt_pin: 0,
-            relays_count: 0,
-            relays_settings: [RelaySettings::new(); MAX_RELAYS_COUNT],
+            id,
+            interrupt_pin,
+            relays_count : 0,
+            relays_settings: [RelaySettings::new(); MAX_RELAYS_COUNT as usize],
             state_data: BitsU64::new(0),
+        }
+    }
+
+
+    pub(crate) fn add(&mut self, set_pin: u8, monitor_pin: u8, control_pin: u8, state: u8) -> Result<(), Errors> {
+        if self.relays_count < MAX_RELAYS_COUNT {
+            self.relays_settings[self.relays_count as usize] = RelaySettings::create(set_pin, monitor_pin, control_pin);
+            self.relays_count += 1;
+            let from = self.relays_count * 4;
+            self.state_data.set_bits_u32(from, from + 4, state as u32);
+            Ok(())
+        } else {
+            Err(Errors::RelayCountOverflow)
         }
     }
 }
 
-impl Data for AllData {
+impl Parser for AllData {
 
     fn parse_from(&mut self, data: &[u8]) -> Result<(), Errors> {
 
@@ -811,39 +824,54 @@ impl Data for AllData {
         self.id = u32::parse(&data[0..4])?;
         self.interrupt_pin = data[4];
         self.relays_count = data[5];
-
-        let pairs_count = self.relays_count as usize / 2;
         let data = &data[6..];
-        if data.len() < pairs_count {
+
+        let data = RelaysSettings::parse_items(data, self.relays_count, &mut self.relays_settings)?;
+
+        let pairs_count = (self.relays_count + 1) / 2;
+        if data.len() < pairs_count as usize {
             return Err(Errors::NotEnoughDataGot);
         }
-        let state_data = State::parse_state_data_force(pairs_count, data);
-        self.state_data = BitsU64::new(state_data);
+        self.state_data = State::parse_state_data_force(pairs_count, data);
 
-        let data = &data[pairs_count..];
-        if data.len() != self.relays_count as usize * 3 {
-            return Err(Errors::InvalidDataSize);
-        }
-        RelaysSettings::parse_items(&data[1..], self.relays_count, &mut self.relays_settings)?;
         Ok(())
     }
+}
+
+impl Serializable for AllData {
 
     fn serialize<B: BufferWriter>(&self, buffer: &mut B) -> Result<(), Errors> {
         self.id.serialize(buffer)?;
         buffer.add_u8(self.interrupt_pin)?;
         buffer.add_u8(self.relays_count)?;
-        buffer.add_u64(self.state_data.bits)?;
-        for setting in self.relays_settings {
+        for i in 0..self.relays_count as usize {
+            let setting = &self.relays_settings[i];
             setting.serialize(buffer)?;
+        }
+        let pairs_count = (self.relays_count + 1) / 2;
+        for i in 0..pairs_count {
+            let from = i * 8;
+            let state = self.state_data.bits_u8(from, from + 8)?;
+            buffer.add_u8(state)?;
         }
         Ok(())
     }
 
-    fn default() -> Self where Self: Sized {
-        Self::new()
-    }
-
 }
+
+impl AutoCreator for AllData {
+    fn default() -> Self where Self: Sized {
+        Self {
+            id: 0,
+            interrupt_pin: 0,
+            relays_count: 0,
+            relays_settings: [RelaySettings::new(); MAX_RELAYS_COUNT as usize],
+            state_data: BitsU64::new(0),
+        }
+    }
+}
+
+impl Data for AllData {}
 
 #[derive(PartialEq, Debug)]
 pub struct SwitchCountingSettings {
@@ -852,10 +880,10 @@ pub struct SwitchCountingSettings {
 }
 
 impl SwitchCountingSettings {
-    pub const fn new() -> Self {
+    pub const fn new(switch_limit_interval_seconds: u16, max_switch_count: u8) -> Self {
         Self {
-            switch_limit_interval: RelativeSeconds16(0),
-            max_switch_count: 0,
+            switch_limit_interval: RelativeSeconds16(switch_limit_interval_seconds),
+            max_switch_count,
         }
     }
 
@@ -868,7 +896,7 @@ impl SwitchCountingSettings {
 
 }
 
-impl Data for SwitchCountingSettings {
+impl Parser for SwitchCountingSettings {
 
     fn parse_from(&mut self, data: &[u8]) -> Result<(), Errors> {
         if data.len() != 3 {
@@ -879,34 +907,55 @@ impl Data for SwitchCountingSettings {
             Ok(())
         }
     }
+}
+
+impl Serializable for SwitchCountingSettings {
 
     fn serialize<B: BufferWriter>(&self, buffer: &mut B) -> Result<(), Errors> {
         buffer.add_u16(self.switch_limit_interval.0)?;
         buffer.add_u8(self.max_switch_count)
     }
 
-    fn default() -> Self where Self: Sized {
-        Self::new()
-    }
-
 }
+
+impl AutoCreator for SwitchCountingSettings {
+    fn default() -> Self where Self: Sized {
+        Self {
+            switch_limit_interval: RelativeSeconds16(0),
+            max_switch_count: 0,
+        }
+    }
+}
+
+impl Data for SwitchCountingSettings {}
 
 #[derive(PartialEq, Debug)]
 pub struct StateSwitchDatas {
-    pub data: [StateSwitchData; SWITCHES_DATA_BUFFER_SIZE],
-    pub count: usize,
+    pub data: [StateSwitchData; SWITCHES_DATA_BUFFER_SIZE as usize],
+    pub count: u8,
 }
 
 impl StateSwitchDatas {
 
     pub const fn new() -> Self {
         Self {
-            data: [StateSwitchData::new(); SWITCHES_DATA_BUFFER_SIZE],
+            data: [StateSwitchData::new(0, 0); SWITCHES_DATA_BUFFER_SIZE as usize],
             count: 0,
         }
     }
 
-    fn set_count(&mut self, new_count: usize) -> Result<(), Errors> {
+    pub fn add_switch_data(&mut self, fix_try_count: u8, fix_last_try_time_seconds: u32) -> Result<(), Errors> {
+        if self.count < MAX_RELAYS_COUNT {
+            let data = StateSwitchData::new(fix_try_count, fix_last_try_time_seconds);
+            self.data[self.count as usize] = data;
+            self.count += 1;
+            Ok(())
+        } else {
+            Err(Errors::RelayCountOverflow)
+        }
+    }
+
+    fn set_count(&mut self, new_count: u8) -> Result<(), Errors> {
         if new_count > SWITCHES_DATA_BUFFER_SIZE {
             Err(Errors::SwitchesDataCountOverflow)
         } else {
@@ -915,52 +964,59 @@ impl StateSwitchDatas {
         }
     }
 
-    fn set_data(&mut self, index: usize, new_data: StateSwitchData) -> Result<(), Errors> {
+    fn set_data(&mut self, index: u8, new_data: StateSwitchData) -> Result<(), Errors> {
         if index >= SWITCHES_DATA_BUFFER_SIZE {
             Err(Errors::SwitchesDataCountOverflow)
         } else {
-            self.data[index] = new_data;
+            self.data[index as usize] = new_data;
             Ok(())
         }
     }
 
 }
 
-impl Data for StateSwitchDatas {
+impl Parser for StateSwitchDatas {
 
     fn parse_from(&mut self, data: &[u8]) -> Result<(), Errors> {
         if data.len() < 1 {
             return Err(Errors::NotEnoughDataGot);
         }
         let relays_count = data[0];
-        if (data.len() as u8) != relays_count * 4 + 1 {
+        if (data.len() as u8) != relays_count * 5 + 1 {
             return Err(Errors::InvalidDataSize);
         }
-        self.set_count(relays_count as usize)?;
-        for i in 0..relays_count as usize {
-            let pos = 1 + i * 5;
+        self.set_count(relays_count)?;
+        for i in 0..relays_count  {
+            let pos = 1 + i as usize * 5;
             let switch_count_data = data[pos];
             let timestamp = u32::extract(&data[pos + 1..pos + 5]);
             self.set_data(i, StateSwitchData::create(switch_count_data, timestamp))?;
         }
         Ok(())
     }
+}
+
+impl Serializable for StateSwitchDatas {
 
     fn serialize<B: BufferWriter>(&self, buffer: &mut B) -> Result<(), Errors> {
-        buffer.add_u8(self.count as u8)?;
+        buffer.add_u8(self.count)?;
         for i in 0..self.count {
-            let data = &self.data[i];
+            let data = &self.data[i as usize];
             buffer.add_u8(data.state.bits)?;
             data.time_stamp.serialize(buffer)?;
         }
         Ok(())
     }
 
+}
+
+impl AutoCreator for StateSwitchDatas {
     fn default() -> Self where Self: Sized {
         Self::new()
     }
-
 }
+
+impl Data for StateSwitchDatas {}
 
 #[derive(Copy, Clone, PartialEq, Debug)]
 pub struct StateSwitchData {
@@ -970,10 +1026,10 @@ pub struct StateSwitchData {
 
 impl StateSwitchData {
 
-    pub const fn new() -> Self {
+    pub const fn new(state_byte: u8, time_stamp: u32) -> Self {
         Self {
-            state: BitsU8::new(0),
-            time_stamp: RelativeSeconds::new(0),
+            state: BitsU8::new(state_byte),
+            time_stamp: RelativeSeconds::new(time_stamp),
         }
     }
 
@@ -988,8 +1044,8 @@ impl StateSwitchData {
 
 #[derive(PartialEq, Debug)]
 pub struct ContactsWaitData {
-    relays_count: usize,
-    contacts_wait_start_timestamps: [RelativeSeconds; MAX_RELAYS_COUNT],
+    relays_count: u8,
+    contacts_wait_start_timestamps: [RelativeSeconds; MAX_RELAYS_COUNT as usize],
 }
 
 impl ContactsWaitData {
@@ -997,11 +1053,21 @@ impl ContactsWaitData {
     pub const fn new() -> Self {
         Self {
             relays_count: 0,
-            contacts_wait_start_timestamps: [RelativeSeconds::new(0); MAX_RELAYS_COUNT],
+            contacts_wait_start_timestamps: [RelativeSeconds::new(0); MAX_RELAYS_COUNT as usize],
         }
     }
 
-    fn update_count(&mut self, new_count: usize) -> Result<(), Errors> {
+    pub fn add(&mut self, timestamp: u32) -> Result<(), Errors> {
+        if self.relays_count < MAX_RELAYS_COUNT {
+            self.contacts_wait_start_timestamps[self.relays_count as usize] = RelativeSeconds::new(timestamp);
+            self.relays_count += 1;
+            Ok(())
+        } else {
+            Err(Errors::RelayCountOverflow)
+        }
+    }
+
+    fn update_count(&mut self, new_count: u8) -> Result<(), Errors> {
         if new_count > MAX_RELAYS_COUNT {
             Err(Errors::RelayCountOverflow)
         } else {
@@ -1010,58 +1076,68 @@ impl ContactsWaitData {
         }
     }
 
-    fn update_timestamp(&mut self, relay_idx: usize, timestamp: u32) -> Result<(), Errors> {
+    fn update_timestamp(&mut self, relay_idx: u8, timestamp: u32) -> Result<(), Errors> {
         if relay_idx > self.relays_count {
             Err(Errors::RelayIndexOutOfRange)
         } else {
-            self.contacts_wait_start_timestamps[relay_idx] = RelativeSeconds::new(timestamp);
+            self.contacts_wait_start_timestamps[relay_idx as usize] = RelativeSeconds::new(timestamp);
             Ok(())
         }
     }
 }
 
-impl Data for ContactsWaitData {
+impl Parser for ContactsWaitData {
 
     fn parse_from(&mut self, data: &[u8]) -> Result<(), Errors> {
         if data.len() < 1 {
             return Err(Errors::NotEnoughDataGot);
         }
         let relays_count = data[0];
-        if (data.len() as u8) < relays_count * 4 + 1 {
-            return Err(Errors::NotEnoughDataGot);
+        if (data.len() as u8) != relays_count * 4 + 1 {
+            return Err(Errors::InvalidDataSize);
         }
-        self.update_count(relays_count as usize)?;
-        for i in 0..relays_count as usize {
-            let pos = 1 + i * 4;
+        self.update_count(relays_count)?;
+        for i in 0..relays_count {
+            let pos = 1 + i as usize * 4;
             let timestamp = u32::extract(&data[pos..pos + 4]);
             self.update_timestamp(i, timestamp)?;
         }
         Ok(())
     }
+}
+
+impl Serializable for ContactsWaitData {
 
     fn serialize<B: BufferWriter>(&self, buffer: &mut B) -> Result<(), Errors> {
-        buffer.add_u8(self.relays_count as u8)?;
+        buffer.add_u8(self.relays_count)?;
         for i in 0..self.relays_count {
-            self.contacts_wait_start_timestamps[i].serialize(buffer)?;
+            self.contacts_wait_start_timestamps[i as usize].serialize(buffer)?;
         }
         Ok(())
     }
 
-    fn default() -> Self where Self: Sized {
-        Self::new()
-    }
-
 }
+
+impl AutoCreator for ContactsWaitData {
+    fn default() -> Self where Self: Sized {
+        Self {
+            relays_count: 0,
+            contacts_wait_start_timestamps: [RelativeSeconds::new(0); MAX_RELAYS_COUNT as usize],
+        }
+    }
+}
+
+impl Data for ContactsWaitData {}
 
 #[derive(PartialEq, Debug)]
 pub struct FixDataContainer {
-    fix_data: [FixData; MAX_RELAYS_COUNT],
-    fix_data_count: usize,
+    fix_data: [FixData; MAX_RELAYS_COUNT as usize],
+    fix_data_count: u8,
 }
 
 impl FixDataContainer {
 
-    fn update_count(&mut self, new_count: usize) -> Result<(), Errors> {
+    fn update_count(&mut self, new_count: u8) -> Result<(), Errors> {
         if new_count > MAX_RELAYS_COUNT {
             Err(Errors::RelayCountOverflow)
         } else {
@@ -1070,7 +1146,7 @@ impl FixDataContainer {
         }
     }
 
-    fn update_data(&mut self, relay_idx: usize, fix_try_count: u8, fix_last_try_time: u32) -> Result<(), Errors> {
+    fn update_data(&mut self, relay_idx: u8, fix_try_count: u8, fix_last_try_time: u32) -> Result<(), Errors> {
         if relay_idx > self.fix_data_count {
             Err(Errors::RelayIndexOutOfRange)
         } else {
@@ -1081,36 +1157,37 @@ impl FixDataContainer {
 
     pub const fn new() -> Self {
         Self {
-            fix_data: [FixData::new(); MAX_RELAYS_COUNT as usize],
+            fix_data: [FixData::new(0, 0); MAX_RELAYS_COUNT as usize],
             fix_data_count: 0,
         }
     }
 
-    pub fn add_fix_data(&mut self, fix_data: FixData) -> Result<(), Errors> {
+    pub fn add_fix_data(&mut self, fix_try_count: u8, fix_last_try_time_seconds: u32) -> Result<(), Errors> {
         if self.fix_data_count < MAX_RELAYS_COUNT {
+            let fix_data = FixData::new(fix_try_count, fix_last_try_time_seconds);
             self.fix_data[self.fix_data_count as usize] = fix_data;
             self.fix_data_count += 1;
             Ok(())
         } else {
-            Err(Errors::RelayIndexOutOfRange)
+            Err(Errors::RelayCountOverflow)
         }
     }
 
-    pub fn get_fix_data(&self, index: usize) -> Option<&FixData> {
+    pub fn get_fix_data(&self, index: u8) -> Option<&FixData> {
         if index < self.fix_data_count {
-            Some(&self.fix_data[index])
+            Some(&self.fix_data[index as usize])
         } else {
             None
         }
     }
 
-    pub fn get_fix_data_count(&self) -> usize {
+    pub fn get_fix_data_count(&self) -> u8 {
         self.fix_data_count
     }
 
 }
 
-impl Data for FixDataContainer {
+impl Parser for FixDataContainer {
 
     fn parse_from(&mut self, data: &[u8]) -> Result<(), Errors> {
         if data.len() < 1 {
@@ -1120,31 +1197,41 @@ impl Data for FixDataContainer {
         if (data.len() as u8) < fix_data_count * 5 + 1 {
             return Err(Errors::NotEnoughDataGot);
         }
-        self.update_count(fix_data_count as usize)?;
-        for i in 0..fix_data_count as usize {
-            let pos = 1 + i * 5;
+        self.update_count(fix_data_count)?;
+        for i in 0..fix_data_count {
+            let pos = 1 + i as usize * 5;
             let try_count = data[pos];
             let try_time = u32::extract(&data[pos + 1..pos + 5]);
             self.update_data(i, try_count, try_time)?;
         }
         Ok(())
     }
+}
+
+impl Serializable for FixDataContainer {
 
     fn serialize<B: BufferWriter>(&self, buffer: &mut B) -> Result<(), Errors> {
         buffer.add_u8(self.fix_data_count as u8)?;
         for i in 0..self.fix_data_count {
-            let fix_data = &self.fix_data[i];
+            let fix_data = &self.fix_data[i as usize];
             buffer.add_u8(fix_data.fix_try_count)?;
             fix_data.fix_last_try_time.serialize(buffer)?;
         }
         Ok(())
     }
 
-    fn default() -> Self where Self: Sized {
-        Self::new()
-    }
-
 }
+
+impl AutoCreator for FixDataContainer {
+    fn default() -> Self where Self: Sized {
+        Self {
+            fix_data: [FixData::new(0, 0); MAX_RELAYS_COUNT as usize],
+            fix_data_count: 0,
+        }
+    }
+}
+
+impl Data for FixDataContainer {}
 
 #[derive(Copy, Clone, PartialEq, Debug)]
 pub struct FixData {
@@ -1154,10 +1241,10 @@ pub struct FixData {
 
 impl FixData {
 
-    pub const fn new() -> Self {
+    pub const fn new(fix_try_count: u8, fix_last_try_time_seconds: u32) -> Self {
         Self {
-            fix_try_count: 0,
-            fix_last_try_time: RelativeSeconds::new(0),
+            fix_try_count,
+            fix_last_try_time: RelativeSeconds::new(fix_last_try_time_seconds),
         }
     }
 
@@ -1189,6 +1276,15 @@ impl CyclesStatistics {
         }
     }
 
+    pub fn new(min_cycle_duration: u16, max_cycle_duration: u16, avg_cycle_duration: u16, cyles_count: u64) -> Self {
+        Self {
+            min_cycle_duration: RelativeMillis16(min_cycle_duration),
+            max_cycle_duration: RelativeMillis16(max_cycle_duration),
+            avg_cycle_duration: RelativeMillis16(avg_cycle_duration),
+            cycles_count: cyles_count,
+        }
+    }
+
     pub fn create(min_cycle_duration: u16, max_cycle_duration: u16, avg_cycle_duration: u16, cyles_count: u64) -> Self {
         Self {
             min_cycle_duration: RelativeMillis16(min_cycle_duration),
@@ -1200,7 +1296,7 @@ impl CyclesStatistics {
 
 }
 
-impl Data for CyclesStatistics {
+impl Parser for CyclesStatistics {
 
     fn parse_from(&mut self, data: &[u8]) -> Result<(), Errors> {
         if data.len() != 14 {
@@ -1213,6 +1309,9 @@ impl Data for CyclesStatistics {
             Ok(())
         }
     }
+}
+
+impl Serializable for CyclesStatistics {
 
     fn serialize<B: BufferWriter>(&self, buffer: &mut B) -> Result<(), Errors> {
         buffer.add_u16(self.min_cycle_duration.0)?;
@@ -1222,11 +1321,15 @@ impl Data for CyclesStatistics {
         Ok(())
     }
 
+}
+
+impl AutoCreator for CyclesStatistics {
     fn default() -> Self where Self: Sized {
         Self::default()
     }
-
 }
+
+impl Data for CyclesStatistics {}
 
 #[derive(PartialEq, Debug)]
 pub struct StateFixSettings {
@@ -1236,7 +1339,29 @@ pub struct StateFixSettings {
     contact_ready_wait_delay: RelativeMillis16,
 }
 
-impl Data for StateFixSettings {
+impl StateFixSettings {
+
+    pub fn default() -> Self {
+        Self {
+            switch_try_duration: RelativeMillis16(0),
+            switch_try_count: 0,
+            wait_delay: RelativeSeconds8(0),
+            contact_ready_wait_delay: RelativeMillis16(0),
+        }
+    }
+
+    pub fn new(switch_try_duration: u16, switch_try_count: u8, wait_delay: u8, contact_ready_wait_delay: u16) -> Self {
+        Self {
+            switch_try_duration: RelativeMillis16(switch_try_duration),
+            switch_try_count,
+            wait_delay: RelativeSeconds8(wait_delay),
+            contact_ready_wait_delay: RelativeMillis16(contact_ready_wait_delay),
+        }
+    }
+
+}
+
+impl Parser for StateFixSettings {
 
     fn parse_from(&mut self, data: &[u8]) -> Result<(), Errors> {
         if data.len() != 6 {
@@ -1249,6 +1374,9 @@ impl Data for StateFixSettings {
             Ok(())
         }
     }
+}
+
+impl Serializable for StateFixSettings {
 
     fn serialize<B: BufferWriter>(&self, buffer: &mut B) -> Result<(), Errors> {
         buffer.add_u16(self.switch_try_duration.0)?;
@@ -1257,6 +1385,9 @@ impl Data for StateFixSettings {
         buffer.add_u16(self.contact_ready_wait_delay.0)
     }
 
+}
+
+impl AutoCreator for StateFixSettings {
     fn default() -> Self where Self: Sized {
         Self {
             switch_try_duration: RelativeMillis16(0),
@@ -1265,64 +1396,79 @@ impl Data for StateFixSettings {
             contact_ready_wait_delay: RelativeMillis16(0),
         }
     }
-
 }
+
+impl Data for StateFixSettings {}
 
 #[derive(PartialEq, Debug)]
 pub struct State {
-    data: BitsU64,
-    count: u8,
+    pub data: BitsU64,
+    pub count: u8,
 }
 
 impl State {
-
     pub fn new () -> Self {
         Self { data: BitsU64::new(0), count: 0 }
     }
 
-    pub fn create(count: u8, raw_data: u64) -> Self {
-        Self { count, data: BitsU64::new(raw_data) }
+    pub fn create(count: u8, raw_data: u64) -> Result<Self, Errors> {
+        if count > MAX_RELAYS_COUNT {
+            return Err(Errors::RelayCountOverflow);
+        }
+        let raw_data = raw_data & ((1 << (count * 2)) - 1);
+        Ok( Self { count, data: BitsU64::new(raw_data) } )
     }
 
-    fn parse_state_data_force(bytes_count: usize, data: &[u8]) -> u64 {
-        let mut state_data = 0_u64;
+    fn parse_state_data_force(bytes_count: u8, data: &[u8]) -> BitsU64 {
+        let mut state_data = BitsU64::new(0);
         for i in 0..bytes_count {
-            state_data |= (data[i] as u64) << (i * 8);
+            let from = i * 8;
+            state_data.set_byte(from, from  + 8, data[i as usize]);
         }
         state_data
     }
 
 }
 
-impl Data for State {
+impl Parser for State {
 
     fn parse_from(&mut self, data: &[u8]) -> Result<(), Errors> {
         if data.len() < 1 {
             return Err(Errors::NotEnoughDataGot);
         }
         self.count = data[0];
-        if self.count > 16 {
-            return Err(Errors::RelayIndexOutOfRange);
+        if self.count > MAX_RELAYS_COUNT {
+            return Err(Errors::RelayCountOverflow);
         }
-        let pairs_count = self.count as usize / 2;
-        if data.len() != 1 + pairs_count {
+        let pairs_count = (self.count + 1) / 2;
+        if data.len() != 1 + pairs_count as usize {
             return Err(Errors::InvalidDataSize);
         }
-        let state_data = Self::parse_state_data_force(pairs_count, &data[1..]);
-        self.count;
-        self.data = BitsU64::new(state_data);
+        self.data = Self::parse_state_data_force(pairs_count, &data[1..]);
+        Ok(())
+    }
+}
+
+impl Serializable for State {
+
+    fn serialize<B: BufferWriter>(&self, buffer: &mut B) -> Result<(), Errors> {
+        buffer.add_u8(self.count)?;
+        let pairs_count = (self.count + 1) / 2;
+        for i in 0..pairs_count {
+            buffer.add_u8( self.data.bits_u8(i * 8, (i + 1) * 8)? )?;
+        }
         Ok(())
     }
 
-    fn serialize<B: BufferWriter>(&self, buffer: &mut B) -> Result<(), Errors> {
-        buffer.add_u64(self.data.bits)
-    }
-
-    fn default() -> Self where Self: Sized {
-        Self::new()
-    }
-
 }
+
+impl AutoCreator for State {
+    fn default() -> Self where Self: Sized {
+        Self { data: BitsU64::new(0), count: 0 }
+    }
+}
+
+impl Data for State {}
 
 #[derive(PartialEq, Debug)]
 pub struct RelaySingleState {
@@ -1331,8 +1477,12 @@ pub struct RelaySingleState {
 
 impl RelaySingleState {
 
-    pub fn new (value: u8) -> Self {
-        Self { data: BitsU8::new(value) }
+    pub fn new (relay_idx: u8, is_on: bool) -> Self {
+        let mut result = Self { data: BitsU8::new(relay_idx) };
+        if is_on {
+            result.data.set(4);
+        }
+        result
     }
 
     pub fn relay_index(&self) -> u8 {
@@ -1340,12 +1490,12 @@ impl RelaySingleState {
     }
 
     pub fn is_set(&self) -> bool {
-        self.data.bits(4, 7).unwrap() > 0
+        self.data.get(4)
     }
 
 }
 
-impl Data for RelaySingleState {
+impl Parser for RelaySingleState {
 
     fn parse_from(&mut self, data: &[u8]) -> Result<(), Errors> {
         if data.len() == 1 {
@@ -1355,16 +1505,23 @@ impl Data for RelaySingleState {
             Err(Errors::InvalidDataSize)
         }
     }
+}
+
+impl Serializable for RelaySingleState {
 
     fn serialize<B: BufferWriter>(&self, buffer: &mut B) -> Result<(), Errors> {
         buffer.add_u8(self.data.bits)
     }
 
-    fn default() -> Self where Self: Sized {
-        Self::new(0)
-    }
-
 }
+
+impl AutoCreator for RelaySingleState {
+    fn default() -> Self where Self: Sized {
+        Self { data: BitsU8::new(0) }
+    }
+}
+
+impl Data for RelaySingleState {}
 
 #[derive(PartialEq, Debug)]
 pub struct RelayState {
@@ -1372,14 +1529,9 @@ pub struct RelayState {
 }
 
 impl RelayState {
-
-    pub fn new() -> Self {
-        RelayState { data: BitsU8::new(0) }
-    }
-
     pub fn create(relay_index: u8, on: bool, disabled: bool) -> Result<Self, Errors> {
-        if relay_index > 0x0f {
-            return Err(Errors::RelayIndexOutOfRange);
+        if relay_index > MAX_RELAYS_COUNT {
+            return Err(Errors::RelayCountOverflow);
         }
         let mut data = BitsU8::new(relay_index & 0x0f);
         data.set_value(5, on);
@@ -1423,7 +1575,7 @@ impl RelayState {
     }
 }
 
-impl Data for RelayState {
+impl Parser for RelayState {
 
     fn parse_from(&mut self, data: &[u8]) -> Result<(), Errors> {
         if data.len() == 1 {
@@ -1433,16 +1585,23 @@ impl Data for RelayState {
             Err(Errors::InvalidDataSize)
         }
     }
+}
+
+impl Serializable for RelayState {
 
     fn serialize<B: BufferWriter>(&self, buffer: &mut B) -> Result<(), Errors> {
         buffer.add_u8(self.data.bits)
     }
 
-    fn default() -> Self where Self: Sized {
-        Self::new()
-    }
-
 }
+
+impl AutoCreator for RelayState {
+    fn default() -> Self where Self: Sized {
+        RelayState { data: BitsU8::new(0) }
+    }
+}
+
+impl Data for RelayState {}
 
 #[derive(Copy, Clone, PartialEq, Debug)]
 pub struct PinData {
@@ -1460,26 +1619,26 @@ impl PinData {
 
 #[derive(Copy, Clone, PartialEq, Debug)]
 pub struct RelaySettings {
-    control_pin: PinData,
-    monitor_pin: PinData,
     set_pin: PinData,
+    monitor_pin: PinData,
+    control_pin: PinData,
 }
 
 impl RelaySettings {
 
     pub const fn new() -> Self {
         Self {
-            control_pin: PinData::new(),
-            monitor_pin: PinData::new(),
             set_pin: PinData::new(),
+            monitor_pin: PinData::new(),
+            control_pin: PinData::new(),
         }
     }
 
-    pub fn create(control_pin: u8, monitor_pin: u8, set_pin: u8) -> Self {
+    pub fn create(set_pin: u8, monitor_pin: u8, control_pin: u8) -> Self {
         Self {
-            control_pin: PinData::create(control_pin),
-            monitor_pin: PinData::create(monitor_pin),
             set_pin: PinData::create(set_pin),
+            monitor_pin: PinData::create(monitor_pin),
+            control_pin: PinData::create(control_pin),
         }
     }
 
@@ -1493,80 +1652,343 @@ impl RelaySettings {
 
 #[derive(PartialEq, Debug)]
 pub struct RelaysSettings {
-    relays: [RelaySettings; MAX_RELAYS_COUNT],
-    relays_count: usize,
+    pub relays: [RelaySettings; MAX_RELAYS_COUNT as usize],
+    pub relays_count: u8,
 }
 
 impl RelaysSettings {
+    pub(crate) fn add(&mut self, set_pin: u8, monitor_pin: u8, control_pin: u8) -> Result<(), Errors> {
+        if self.relays_count < MAX_RELAYS_COUNT {
+            self.relays[self.relays_count as usize] = RelaySettings::create(set_pin, monitor_pin, control_pin);
+            self.relays_count += 1;
+            Ok(())
+        } else {
+            Err(Errors::RelayCountOverflow)
+        }
+    }
 
     pub fn get_relays(&self) -> &[RelaySettings] {
-        &self.relays[..self.relays_count]
+        &self.relays[..self.relays_count as usize]
     }
 
     pub const fn new() -> Self {
         Self {
-            relays: [RelaySettings::new(); MAX_RELAYS_COUNT],
+            relays: [RelaySettings::new(); MAX_RELAYS_COUNT as usize],
             relays_count: 0,
         }
     }
 
-    fn set_relay_count(&mut self, relays_count: usize) -> Result<(), Errors> {
+    fn set_relay_count(&mut self, relays_count: u8) -> Result<(), Errors> {
         if relays_count > MAX_RELAYS_COUNT {
-            return Err(Errors::RelayIndexOutOfRange);
+            return Err(Errors::RelayCountOverflow);
         }
         self.relays_count = relays_count;
         Ok(())
     }
 
-    fn set_relay_settings(&mut self, relay_index: usize, relay_settings: RelaySettings) -> Result<(), Errors> {
+    fn set_relay_settings(&mut self, relay_index: u8, relay_settings: RelaySettings) -> Result<(), Errors> {
         if relay_index >= self.relays_count {
             return Err(Errors::RelayIndexOutOfRange);
         }
-        self.relays[relay_index] = relay_settings;
+        self.relays[relay_index as usize] = relay_settings;
         Ok(())
     }
 
-    fn parse_items(data: &[u8], relays_count: u8, relays_settings_buffer: &mut [RelaySettings]) -> Result<(), Errors> {
+    fn parse_items<'a>(data: &'a[u8], relays_count: u8, relays_settings_buffer: &mut [RelaySettings]) -> Result<&'a[u8], Errors> {
+        if (data.len() as u8) < relays_count * 3 {
+            return Err(Errors::NotEnoughDataGot);
+        }
         for i in 0..relays_count as usize {
             let pos = i * 3;
             let set_pin = data[pos];
             let monitor_pin = data[pos + 1];
             let control_pin = data[pos + 2];
-            relays_settings_buffer[i] = RelaySettings::create(control_pin, monitor_pin, set_pin);
+            relays_settings_buffer[i] = RelaySettings::create(set_pin, monitor_pin, control_pin);
         }
-        Ok(())
+        let  shift = relays_count as usize * 3;
+        Ok(if data.len() > shift { &data[shift..] } else { &data[0..0] })
     }
 
 }
 
-impl Data for RelaysSettings {
+impl Parser for RelaysSettings {
 
     fn parse_from(&mut self, data: &[u8]) -> Result<(), Errors> {
         if data.len() < 1 {
             return Err(Errors::NotEnoughDataGot);
         }
         let relays_count = data[0];
-        if relays_count > MAX_RELAYS_COUNT as u8 {
-            return Err(Errors::RelayIndexOutOfRange);
-        }
         if (data.len() as u8) < relays_count * 3 + 1 {
             return Err(Errors::NotEnoughDataGot);
         }
-        self.set_relay_count(relays_count as usize)?;
-        Self::parse_items(&data[1..], relays_count, &mut self.relays)?;
+        self.set_relay_count(relays_count)?;
+        _ = Self::parse_items(&data[1..], relays_count, &mut self.relays)?;
         Ok(())
     }
+}
 
+impl Serializable for RelaysSettings {
     fn serialize<B: BufferWriter>(&self, buffer: &mut B) -> Result<(), Errors> {
-        buffer.add_u8(self.relays.len() as u8)?;
-        for setting in self.relays {
+        buffer.add_u8(self.relays_count)?;
+        for i in 0..self.relays_count as usize {
+            let setting = &self.relays[i];
             setting.serialize(buffer)?;
         }
         Ok(())
     }
+}
 
+impl AutoCreator for RelaysSettings {
     fn default() -> Self where Self: Sized {
         Self::new()
     }
+}
 
+impl Data for RelaysSettings {}
+
+
+#[repr(u8)]
+#[derive(Copy, Clone, PartialEq, Debug)]
+pub enum Signals {
+    None = 0x00,
+    GetTimeStamp = 0x14,
+    RelayStateChanged = 0x15,
+    MonitoringStateChanged = 0x16,
+    ControlStateChanged = 0x17,
+    StateFixTry = 0x19,
+    Unknown = 0xff,
+}
+
+#[repr(u8)]
+#[derive(Copy, Clone, PartialEq, Debug)]
+pub enum SignalData {
+    GetTimeStamp = Signals::GetTimeStamp as u8,
+    RelayStateChanged(RelaySignalDataExt) = Signals::RelayStateChanged as u8,
+    MonitoringStateChanged(RelaySignalData) = Signals::MonitoringStateChanged as u8,
+    ControlStateChanged(RelaySignalData) = Signals::ControlStateChanged as u8,
+    StateFixTry (RelaySignalData)= Signals::StateFixTry as u8,
+}
+
+impl SignalData {
+    pub fn code(&self) -> Signals {
+        match self {
+            SignalData::GetTimeStamp => Signals::GetTimeStamp,
+            SignalData::RelayStateChanged(_) => Signals::RelayStateChanged,
+            SignalData::MonitoringStateChanged(_) => Signals::MonitoringStateChanged,
+            SignalData::ControlStateChanged(_) => Signals::ControlStateChanged,
+            SignalData::StateFixTry(_) => Signals::StateFixTry,
+        }
+    }
+
+    pub fn create(signal: Signals) -> Result<Self, Errors> {
+        match signal {
+            Signals::GetTimeStamp => Ok(SignalData::GetTimeStamp),
+            Signals::RelayStateChanged => Ok(SignalData::RelayStateChanged(RelaySignalDataExt::default())),
+            Signals::MonitoringStateChanged => Ok(SignalData::MonitoringStateChanged(RelaySignalData::default())),
+            Signals::ControlStateChanged => Ok(SignalData::ControlStateChanged(RelaySignalData::default())),
+            Signals::StateFixTry => Ok(SignalData::StateFixTry(RelaySignalData::default())),
+            _ => Err(Errors::UndefinedOperation),
+        }
+    }
+
+    pub fn parse(signal: Signals, data: &[u8]) -> Result<Self, Errors> {
+        match signal {
+            Signals::GetTimeStamp => Ok(SignalData::GetTimeStamp),
+            Signals::RelayStateChanged => Ok(SignalData::RelayStateChanged(RelaySignalDataExt::parse(data)?)),
+            Signals::MonitoringStateChanged => Ok(SignalData::MonitoringStateChanged(RelaySignalData::parse(data)?)),
+            Signals::ControlStateChanged => Ok(SignalData::ControlStateChanged(RelaySignalData::parse(data)?)),
+            Signals::StateFixTry => Ok(SignalData::StateFixTry(RelaySignalData::parse(data)?)),
+            _ => Err(Errors::UndefinedOperation),
+        }
+    }
+}
+
+impl Signals {
+    pub fn get(signal_code: u8) -> Result<Signals, Errors> {
+        if signal_code == Signals::MonitoringStateChanged as u8 {
+            Ok(Signals::MonitoringStateChanged)
+        } else if signal_code == Signals::StateFixTry as u8 {
+            Ok(Signals::StateFixTry)
+        } else if signal_code == Signals::ControlStateChanged as u8 {
+            Ok(Signals::ControlStateChanged)
+        } else if signal_code == Signals::RelayStateChanged as u8 {
+            Ok(Signals::RelayStateChanged)
+        } else if signal_code == Signals::GetTimeStamp as u8 {
+            Ok(Signals::GetTimeStamp)
+        } else {
+            Err(Errors::InstructionNotRecognized(signal_code))
+        }
+    }
+
+}
+
+
+pub trait RelaySignalDataGetter {
+    fn get_relative_timestamp(&self) -> RelativeSeconds;
+    fn get_relay_idx(&self) -> u8;
+    fn is_on(&self) -> bool;
+}
+
+trait RelaySignalDataSetter : AutoCreator {
+    fn set_relative_timestamp(&mut self, relative_timestamp: RelativeSeconds);
+    fn set_relay_idx(&mut self, relay_idx: u8);
+    fn set_is_on(&mut self, is_on: bool);
+    fn parse_from(&mut self, data: &[u8]) -> Result<(), Errors> {
+        if data.len() != 5 {
+            return Err(Errors::InvalidDataSize);
+        }
+        let state = u8::parse(&data[0..1])?;
+        self.set_relay_idx( state & 0x0f_u8 );
+        self.set_is_on( state & 0x10 > 0 );
+        self.set_relative_timestamp( RelativeSeconds::parse(&data[1..])? );
+
+        Ok(())
+    }
+}
+
+#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Debug)]
+pub struct RelaySignalData {
+    relative_timestamp: RelativeSeconds,
+    relay_idx: u8,
+    is_on: bool,
+}
+
+impl RelaySignalData {
+    pub fn new(relative_timestamp: RelativeSeconds, relay_idx: u8, is_on: bool) -> Self {
+        Self {
+            relative_timestamp,
+            relay_idx,
+            is_on,
+        }
+    }
+}
+
+impl RelaySignalDataGetter for RelaySignalData {
+    fn get_relative_timestamp(&self) -> RelativeSeconds {
+        self.relative_timestamp
+    }
+
+    fn get_relay_idx(&self) -> u8 {
+        self.relay_idx
+    }
+
+    fn is_on(&self) -> bool {
+        self.is_on
+    }
+}
+
+impl RelaySignalDataSetter for RelaySignalData {
+    fn set_relative_timestamp(&mut self, relative_timestamp: RelativeSeconds) {
+        self.relative_timestamp = relative_timestamp;
+    }
+
+    fn set_relay_idx(&mut self, relay_idx: u8) {
+        self.relay_idx = relay_idx;
+    }
+
+    fn set_is_on(&mut self, is_on: bool) {
+        self.is_on = is_on;
+    }
+}
+
+impl Parser for RelaySignalData {
+    fn parse_from(&mut self, data: &[u8]) -> Result<(), Errors> {
+        RelaySignalDataSetter::parse_from(self, data)
+    }
+}
+
+impl Serializable for RelaySignalData {
+    fn serialize<B: BufferWriter>(&self, buffer: &mut B) -> Result<(), Errors> {
+        let mut state = 0_u8;
+        state |= self.get_relay_idx() & 0x0f;
+        if self.is_on() {
+            state |= 0x10;
+        }
+        state.serialize(buffer)?;
+        self.get_relative_timestamp().serialize(buffer)?;
+        Ok(())
+    }
+}
+
+impl AutoCreator for RelaySignalData {
+    fn default() -> Self where Self: Sized {
+        Self::new(RelativeSeconds::new(0), 0, false)
+    }
+}
+
+#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Debug)]
+pub struct RelaySignalDataExt {
+    relative_timestamp: RelativeSeconds,
+    relay_idx: u8,
+    is_on: bool,
+    is_called_internally: bool,
+}
+
+impl RelaySignalDataExt {
+    pub fn new(relative_timestamp: RelativeSeconds, relay_idx: u8, is_on: bool, is_called_internally: bool) -> Self {
+        Self {
+            relative_timestamp,
+            relay_idx,
+            is_on,
+            is_called_internally,
+        }
+    }
+}
+
+impl RelaySignalDataGetter for RelaySignalDataExt {
+    fn get_relative_timestamp(&self) -> RelativeSeconds {
+        self.relative_timestamp
+    }
+
+    fn get_relay_idx(&self) -> u8 {
+        self.relay_idx
+    }
+
+    fn is_on(&self) -> bool {
+        self.is_on
+    }
+}
+
+impl RelaySignalDataSetter for RelaySignalDataExt {
+    fn set_relative_timestamp(&mut self, relative_timestamp: RelativeSeconds) {
+        self.relative_timestamp = relative_timestamp;
+    }
+
+    fn set_relay_idx(&mut self, relay_idx: u8) {
+        self.relay_idx = relay_idx;
+    }
+
+    fn set_is_on(&mut self, is_on: bool) {
+        self.is_on = is_on;
+    }
+}
+
+impl AutoCreator for RelaySignalDataExt {
+    fn default() -> Self where Self: Sized {
+        Self::new(RelativeSeconds::new(0), 0, false, false)
+    }
+}
+
+impl Parser for RelaySignalDataExt {
+    fn parse_from(&mut self, data: &[u8]) -> Result<(), Errors> {
+        RelaySignalDataSetter::parse_from(self, data)?;
+        self.is_called_internally = data[0] & 0x20 > 0;
+        Ok(())
+    }
+}
+
+impl Serializable for RelaySignalDataExt {
+    fn serialize<B: BufferWriter>(&self, buffer: &mut B) -> Result<(), Errors> {
+        let mut state = 0_u8;
+        state |= self.get_relay_idx() & 0x0f;
+        if self.is_on() {
+            state |= 0x10;
+        }
+        if self.is_called_internally {
+            state |= 0x20;
+        }
+        state.serialize(buffer)?;
+        self.get_relative_timestamp().serialize(buffer)?;
+        Ok(())
+    }
 }

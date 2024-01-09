@@ -58,7 +58,7 @@ impl BitsU8 {
         if from > to {
             return Err(Errors::FromAfterTo);
         }
-        if from > 7 || to > 7 {
+        if from >= 8 || to >= 8 {
             return Err(Errors::OutOfRange);
         }
         let mask = (1 << (to - from + 1)) - 1;
@@ -105,6 +105,56 @@ impl BitsU64 {
         } else {
             self.clear(bit);
         }
+    }
+
+    /**
+    Value of bits from `from` to `to` (inclusive).
+     */
+    pub fn bits_u8(&self, from: u8, to: u8) -> Result<u8, Errors> {
+        if from > to {
+            return Err(Errors::FromAfterTo);
+        }
+        if from >= 64 || to >= 64 {
+            return Err(Errors::OutOfRange);
+        }
+        if to - from > 8 {
+            return Err(Errors::DataOverflow);
+        }
+        let res = (self.bits >> from) as u8;
+        let mask = ((1_u16 << (to - from + 1)) - 1)  as u8;
+        Ok(res & mask)
+    }
+
+    pub fn set_byte(&mut self, from: u8, to: u8, value: u8) -> Result<(), Errors> {
+        if from > to {
+            return Err(Errors::FromAfterTo);
+        }
+        if from >= 64 || to >= 64 {
+            return Err(Errors::OutOfRange);
+        }
+        if to - from > 8{
+            return Err(Errors::DataOverflow);
+        }
+        let value = (value as u64) << from;
+        let mask = ((1_u64 << (to - from + 1)) - 1) << from;
+        self.bits = (self.bits & !mask) | (value & mask);
+        Ok(())
+    }
+
+    pub fn set_bits_u32(&mut self, from: u8, to: u8, value: u32) -> Result<(), Errors> {
+        if from > to {
+            return Err(Errors::FromAfterTo);
+        }
+        if from >= 64 || to >= 64 {
+            return Err(Errors::OutOfRange);
+        }
+        if to - from > 32{
+            return Err(Errors::DataOverflow);
+        }
+        let value = (value as u64) << from;
+        let mask = ((1_u64 << (to - from + 1)) - 1) << from;
+        self.bits = (self.bits & !mask) | (value & mask);
+        Ok(())
     }
 
 }
@@ -244,6 +294,14 @@ mod tests {
             value.set_value(i, false);
             assert_eq!(value.get(i), false);
         }
+    }
+
+
+    #[test]
+    fn test_bits() {
+        let d = BitsU8::new(15);
+        assert_eq!(d.bits(0, 2).unwrap(), 7);
+        assert_eq!(d.bits(7, 7).unwrap(), 0);
     }
 
     #[test]

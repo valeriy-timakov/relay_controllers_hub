@@ -2,21 +2,19 @@
 
 use crate::errors::Errors;
 use crate::hal_ext::serial_transfer::Receiver;
-use crate::services::slave_controller_link::parsers::{PayloadParser, ResponseParser, PayloadParserResult, SignalParser, ResponseBodyParser, ResponsePostParser};
+use crate::services::slave_controller_link::parsers::{PayloadParser, ResponseParser, PayloadParserResult, SignalParser};
 use crate::services::slave_controller_link::requests_controller::RequestsControllerRx;
 use crate::services::slave_controller_link::signals_controller::SignalController;
 
-pub trait ReceiverFromSlaveControllerAbstract<Rc, SC, RCR, EH, PP, SP, RP, RBP, RPP>
+pub trait ReceiverFromSlaveControllerAbstract<Rc, SC, RCR, EH, PP, SP, RP>
     where
         Rc: Receiver,
         SC: SignalController<SP>,
-        RCR: RequestsControllerRx<RP, RBP, RPP>,
+        RCR: RequestsControllerRx<RP>,
         EH: Fn(Errors),
-        PP: PayloadParser<SP, RP, RBP, RPP>,
+        PP: PayloadParser<SP, RP>,
         SP: SignalParser,
-        RP: ResponseParser<RBP, RPP>,
-        RBP: ResponseBodyParser,
-        RPP: ResponsePostParser,
+        RP: ResponseParser,
 {
 
     fn slice(&mut self) -> (&mut Rc, &mut SC, &mut RCR, &PP);
@@ -35,7 +33,6 @@ pub trait ReceiverFromSlaveControllerAbstract<Rc, SC, RCR, EH, PP, SP, RP, RBP, 
                     signal_controller.process_signal(signal_parser, data);
                     Ok(())
                 }
-                _ => Err(Errors::UndefinedOperation),
             }
         });
         if res.is_err() {
@@ -44,17 +41,15 @@ pub trait ReceiverFromSlaveControllerAbstract<Rc, SC, RCR, EH, PP, SP, RP, RBP, 
     }
 }
 
-pub struct ReceiverFromSlaveController<Rc, SC, RCR, EH, PP, SP, RP, RBP, RPP>
+pub struct ReceiverFromSlaveController<Rc, SC, RCR, EH, PP, SP, RP>
     where
         Rc: Receiver,
         SC: SignalController<SP>,
-        RCR: RequestsControllerRx<RP, RBP, RPP>,
+        RCR: RequestsControllerRx<RP>,
         EH: Fn(Errors),
-        PP: PayloadParser<SP, RP, RBP, RPP>,
+        PP: PayloadParser<SP, RP>,
         SP: SignalParser,
-        RP: ResponseParser<RBP, RPP>,
-        RBP: ResponseBodyParser,
-        RPP: ResponsePostParser,
+        RP: ResponseParser,
 {
     rx: Rc,
     signal_controller: SC,
@@ -63,21 +58,17 @@ pub struct ReceiverFromSlaveController<Rc, SC, RCR, EH, PP, SP, RP, RBP, RPP>
     payload_parser: PP,
     _signal_parser: core::marker::PhantomData<SP>,
     _response_parser: core::marker::PhantomData<RP>,
-    _response_body_parser: core::marker::PhantomData<RBP>,
-    _response_post_parser: core::marker::PhantomData<RPP>,
 }
 
-impl < Rc, SC, RCR, EH, PP, SP, RP, RBP, RPP> ReceiverFromSlaveController<Rc, SC, RCR, EH, PP, SP, RP, RBP, RPP>
+impl < Rc, SC, RCR, EH, PP, SP, RP> ReceiverFromSlaveController<Rc, SC, RCR, EH, PP, SP, RP>
     where
         Rc: Receiver,
         SC: SignalController<SP>,
-        RCR: RequestsControllerRx<RP, RBP, RPP>,
+        RCR: RequestsControllerRx<RP>,
         EH: Fn(Errors),
-        PP: PayloadParser<SP, RP, RBP, RPP>,
+        PP: PayloadParser<SP, RP>,
         SP: SignalParser,
-        RP: ResponseParser<RBP, RPP>,
-        RBP: ResponseBodyParser,
-        RPP: ResponsePostParser,
+        RP: ResponseParser,
 {
     pub fn new(rx: Rc, signal_controller: SC, requests_controller_rx: RCR, error_handler: EH, payload_parser: PP) -> Self {
         Self {
@@ -88,8 +79,6 @@ impl < Rc, SC, RCR, EH, PP, SP, RP, RBP, RPP> ReceiverFromSlaveController<Rc, SC
             payload_parser,
             _signal_parser: core::marker::PhantomData,
             _response_parser: core::marker::PhantomData,
-            _response_body_parser: core::marker::PhantomData,
-            _response_post_parser: core::marker::PhantomData,
         }
     }
 
@@ -99,18 +88,16 @@ impl < Rc, SC, RCR, EH, PP, SP, RP, RBP, RPP> ReceiverFromSlaveController<Rc, SC
     }
 }
 
-impl <Rc, RCR, SC, EH, PP, SP, RP, RBP, RPP> ReceiverFromSlaveControllerAbstract<Rc, SC, RCR, EH, PP, SP, RP, RBP, RPP>
-    for ReceiverFromSlaveController<Rc, SC, RCR, EH, PP, SP, RP, RBP, RPP>
+impl <Rc, RCR, SC, EH, PP, SP, RP> ReceiverFromSlaveControllerAbstract<Rc, SC, RCR, EH, PP, SP, RP>
+    for ReceiverFromSlaveController<Rc, SC, RCR, EH, PP, SP, RP>
     where
         Rc: Receiver,
         SC: SignalController<SP>,
-        RCR: RequestsControllerRx<RP, RBP, RPP>,
+        RCR: RequestsControllerRx<RP>,
         EH: Fn(Errors),
-        PP: PayloadParser<SP, RP, RBP, RPP>,
+        PP: PayloadParser<SP, RP>,
         SP: SignalParser,
-        RP: ResponseParser<RBP, RPP>,
-        RBP: ResponseBodyParser,
-        RPP: ResponsePostParser,
+        RP: ResponseParser,
 {
     #[inline(always)]
     fn slice(&mut self) ->( &mut Rc, &mut SC, &mut RCR, &PP) {
@@ -131,8 +118,8 @@ mod tests {
     use alloc::vec::Vec;
     use core::cell::{RefCell};
     use rand::Rng;
-    use crate::services::slave_controller_link::domain::{DataInstructionCodes, DataInstructions, ErrorCode, Operation, Version};
-    use crate::services::slave_controller_link::parsers::{SignalParser, SignalParseResult};
+    use crate::services::slave_controller_link::domain::{DataInstructionCodes, DataInstructions, SignalData, Version};
+    use crate::services::slave_controller_link::parsers::{ResponseBodyParser, ResponseData, SignalParser};
     use super::*;
 
 
@@ -310,7 +297,7 @@ mod tests {
         }
     }
 
-    impl RequestsControllerRx<MockResponseParser, MockResponseBodyParser, MockResponsePostParser> for MockRequestsControllerRx {
+    impl RequestsControllerRx<MockResponseParser> for MockRequestsControllerRx {
         fn process_response(&mut self, payload: MockResponseParser, data: &[u8]) {
             self.process_response_params = Some((payload, data.to_vec()));
         }
@@ -320,7 +307,7 @@ mod tests {
     struct MockSignalParser {}
 
     impl SignalParser for MockSignalParser {
-        fn parse(&self, data: &[u8]) -> Result<SignalParseResult, Errors> {
+        fn parse(&self, data: &[u8]) -> Result<SignalData, Errors> {
             unimplemented!()
         }
     }
@@ -332,8 +319,8 @@ mod tests {
     #[derive(Debug, PartialEq, Copy, Clone)]
     struct MockResponseParser {}
 
-    impl ResponseParser<MockResponseBodyParser, MockResponsePostParser> for MockResponseParser {
-        fn parse<'a>(&self, body_parser: &MockResponseBodyParser, data: &'a[u8]) -> Result<(MockResponsePostParser, &'a[u8]), Errors> {
+    impl ResponseParser for MockResponseParser {
+        fn parse<'a>(&self, data: &'a[u8], slave_controller_version: Version) -> Result<(ResponseData, &'a[u8]), Errors> {
             unimplemented!()
         }
     }
@@ -342,45 +329,18 @@ mod tests {
         fn request_needs_cache(&self, instruction: DataInstructionCodes) -> bool {
             unimplemented!()
         }
-        fn parse_id<'a>(&self, data: &'a[u8]) -> Result<(Option<u32>, &'a[u8]), Errors> {
-            unimplemented!()
-        }
         fn parse(&self, instruction: DataInstructionCodes, data: &[u8]) -> Result<DataInstructions, Errors> {
-            unimplemented!()
-        }
-        fn slave_controller_version(&self) -> Version {
-            unimplemented!()
-        }
-    }
-
-    #[derive(Debug, PartialEq, Copy, Clone)]
-    struct MockResponsePostParser ();
-
-    impl ResponsePostParser for MockResponsePostParser {
-        fn operation(&self) -> Operation {
-            unimplemented!()
-        }
-        fn instruction(&self) -> DataInstructionCodes {
-            unimplemented!()
-        }
-        fn request_id(&self) -> Option<u32> {
-            unimplemented!()
-        }
-        fn needs_cache(&self) -> bool {
-            unimplemented!()
-        }
-        fn error_code(&self) -> ErrorCode {
             unimplemented!()
         }
     }
 
     struct MockPayloadParser  {
-        parse_result: Result<PayloadParserResult<MockSignalParser, MockResponseParser, MockResponseBodyParser, MockResponsePostParser>, Errors>,
+        parse_result: Result<PayloadParserResult<MockSignalParser, MockResponseParser>, Errors>,
         parse_params: RefCell<Option<Vec<u8>>>,
     }
 
     impl MockPayloadParser  {
-        fn new(parse_result: Result<PayloadParserResult<MockSignalParser, MockResponseParser, MockResponseBodyParser, MockResponsePostParser>, Errors>) -> Self {
+        fn new(parse_result: Result<PayloadParserResult<MockSignalParser, MockResponseParser>, Errors>) -> Self {
             Self{
                 parse_result,
                 parse_params: RefCell::new(None),
@@ -388,15 +348,14 @@ mod tests {
         }
     }
 
-    impl PayloadParser<MockSignalParser, MockResponseParser, MockResponseBodyParser, MockResponsePostParser> for MockPayloadParser {
-        fn parse<'a>(&self, data: &'a[u8]) -> Result<(PayloadParserResult<MockSignalParser, MockResponseParser, MockResponseBodyParser, MockResponsePostParser>, &'a[u8]), Errors> {
+    impl PayloadParser<MockSignalParser, MockResponseParser> for MockPayloadParser {
+        fn parse<'a>(&self, data: &'a[u8]) -> Result<(PayloadParserResult<MockSignalParser, MockResponseParser>, &'a[u8]), Errors> {
             *self.parse_params.borrow_mut() = Some(data.to_vec());
             self.parse_result.clone()
                 .map(|r| {
                     match r {
                         PayloadParserResult::ResponsePayload(_) => (PayloadParserResult::ResponsePayload(MockResponseParser{}), data),
                         PayloadParserResult::SignalPayload(_) => (PayloadParserResult::SignalPayload(MockSignalParser{}), data),
-                        _ => unimplemented!(),
                     }
 
                 })
