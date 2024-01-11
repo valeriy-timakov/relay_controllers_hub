@@ -1,0 +1,26 @@
+ openocd
+ cargo flash --chip stm32f401ccux
+ cargo size --bin stm32-test --release -- -A
+ cargo size --bin stm32-test  -- -A
+ cargo readobj --bin stm32-test -- --file-headers
+cargo readobj --bin stm32-test --release -- -A
+cargo objdump --bin app --release -- --disassemble --no-show-raw-insn --print-imm-hex
+ probe-rs-cli chip list
+arm-none-eabi-gdb  -x openocd.gdb -q
+cargo flash --chip help
+ probe-run --list-chips
+ arm-none-eabi-gdb  -x openocd.gdb  target/thumbv7em-none-eabihf/debug/examples/hello
+ openocd -f interface/stlink-v2.cfg -f target/stm32f4x.cfg
+qemu-system-arm -cpu cortex-m4 -machine netduinoplus2 -nographic -semihosting-config enable=on,target=native
+ -gdb tcp::3333 -S -kernel target/thumbv7em-none-eabihf/debug/examples/hello
+
+
+
+
+cargo install probe-run
+ cargo install cargo-flash
+cargo install flip-link
+cargo install probe-rs-cli
+ cargo install cargo-binutils
+  cargo install cargo-readobj
+   rustup target add thumbv7em-none-eabihf
