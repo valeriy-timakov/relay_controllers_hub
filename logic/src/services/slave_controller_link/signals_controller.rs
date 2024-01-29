@@ -137,10 +137,37 @@ mod tests {
     }
 
     #[test]
-    fn test_signals_proxy_sends_timestamp() {
+    fn test_on_error() {
+        let mut rng = rand::thread_rng();
 
         let mock_signals_handler = Rc::new(RefCell::new(MockSignalsHandler::new()));
+        let mut controller = SignalControllerImpl::new(mock_signals_handler.clone());
+
+        let error = Errors::CommandDataCorrupted;
+        let error_code = ErrorCode::for_error(error);
+        let instruction: u8 = rng.gen();
+        let data_arr = [instruction, rng.gen(), rng.gen(), rng.gen()];
+
+
+        for send_error_success in [true, false] {
+            let mut mock_tx = MockSender::new(Err(Errors::IndexOverflow),
+                                              if send_error_success {Ok(())} else {Err(Errors::IndexOverflow)});
+            controller.on_signal_parse_error(error, data_arr.as_slice(), &mut mock_tx);
+
+            assert_eq!(Some((instruction, error_code)), mock_tx.send_error_params);
+            assert_eq!(Some((error, send_error_success, data_arr.to_vec())), mock_signals_handler.borrow().on_signal_error_params);
+            // should not call other methods
+            assert_eq!(None, mock_tx.send_params);
+            assert_eq!(None, mock_signals_handler.borrow().on_signal_params);
+            assert_eq!(None, mock_signals_handler.borrow().on_signal_process_error_params);
+        }
+    }
+
+    #[test]
+    fn test_signals_proxy_sends_timestamp() {
         let mut rng = rand::thread_rng();
+
+        let mock_signals_handler = Rc::new(RefCell::new(MockSignalsHandler::new()));
         let mut controller = SignalControllerImpl::new(mock_signals_handler.clone());
 
         let data = SignalData::GetTimeStamp;
@@ -158,7 +185,10 @@ mod tests {
                 timestamp)),
             mock_tx.send_params);
         assert_eq!(Some((SignalData::GetTimeStamp, true)), mock_signals_handler.borrow().on_signal_params);
+        // should not call other methods
         assert_eq!(None, mock_signals_handler.borrow().on_signal_process_error_params);
+        assert_eq!(None, mock_tx.send_error_params);
+        assert_eq!(None, mock_signals_handler.borrow().on_signal_error_params);
 
     }
 
@@ -191,7 +221,10 @@ mod tests {
                     timestamp)),
                 mock_tx.send_params);
             assert_eq!(Some((error, false, data)), mock_signals_handler.borrow().on_signal_process_error_params);
+            // should not call other methods
             assert_eq!(None, mock_signals_handler.borrow().on_signal_params);
+            assert_eq!(None, mock_tx.send_error_params);
+            assert_eq!(None, mock_signals_handler.borrow().on_signal_error_params);
         }
 
     }
@@ -232,11 +265,6 @@ mod tests {
 
             let mut controller = SignalControllerImpl::new(mock_signals_handler.clone());
 
-            let data = SignalData::StateFixTry(RelaySignalData::new (
-                RelativeSeconds::new(rng.gen_range(1..u32::MAX)),
-                rng.gen_range(0..15),
-                rng.gen_range(0..1) == 1,
-            ));
             let timestamp = RelativeMillis::new(rng.gen_range(1..u32::MAX));
             let mut time_source = MockTimeSource::new(timestamp);
             let mut mock_tx = MockControlledSender::new(Ok(None), Ok(()));
@@ -246,8 +274,175 @@ mod tests {
 
             assert_eq!(Some((data, false)), mock_signals_handler.borrow().on_signal_params);
             assert_eq!(false, time_source.time_source_called);
+            // should not call other methods
             assert_eq!(None, mock_tx.send_params);
             assert_eq!(None, mock_signals_handler.borrow().on_signal_process_error_params);
+            assert_eq!(None, mock_tx.send_error_params);
+            assert_eq!(None, mock_signals_handler.borrow().on_signal_error_params);
+        }
+    }
+
+    //---combined tests---
+
+    #[test]
+    fn test_signals_proxy_parse_error_combined() {
+        let mut rng = rand::thread_rng();
+
+        let mock_signals_handler = Rc::new(RefCell::new(MockSignalsHandler::new()));
+        let mut controller = SignalControllerImpl::new(mock_signals_handler.clone());
+
+        let error = Errors::CommandDataCorrupted;
+        let error_code = ErrorCode::for_error(error);
+        let instruction: u8 = rng.gen();
+        let data_arr = [instruction, rng.gen(), rng.gen(), rng.gen()];
+
+        let timestamp = RelativeMillis::new(rng.gen_range(1..u32::MAX));
+        let mut time_source = MockTimeSource::new(timestamp);
+        let mut mock_tx = MockSender::new(Ok(Some(rng.gen_range(1..u32::MAX))), Ok(()));
+
+        for send_error_success in [true, false] {
+            let mut mock_tx = MockSender::new(Err(Errors::IndexOverflow),
+                                              if send_error_success {Ok(())} else {Err(Errors::IndexOverflow)});
+            let mock_signal_parser = MockSignalParser::new(Err(error));
+            controller.process_signal(mock_signal_parser, data_arr.as_slice(), &mut time_source, &mut mock_tx);
+
+            assert_eq!(Some((instruction, error_code)), mock_tx.send_error_params);
+            assert_eq!(Some((error, send_error_success, data_arr.to_vec())), mock_signals_handler.borrow().on_signal_error_params);
+            // should not call other methods
+            assert_eq!(None, mock_tx.send_params);
+            assert_eq!(None, mock_signals_handler.borrow().on_signal_params);
+            assert_eq!(None, mock_signals_handler.borrow().on_signal_process_error_params);
+            assert_eq!(false, time_source.time_source_called);
+        }
+
+    }
+
+    #[test]
+    fn test_signals_proxy_sends_timestamp_combined() {
+
+        let mock_signals_handler = Rc::new(RefCell::new(MockSignalsHandler::new()));
+        let mut rng = rand::thread_rng();
+        let mut controller = SignalControllerImpl::new(mock_signals_handler.clone());
+
+        let data = SignalData::GetTimeStamp;
+
+        let data_arr = [0_u8, rng.gen(), rng.gen(), rng.gen()];
+        let mock_signal_parser = MockSignalParser::new(Ok(data));
+
+        let timestamp = RelativeMillis::new(rng.gen_range(1..u32::MAX));
+        let mut time_source = MockTimeSource::new(timestamp);
+        let mut mock_tx = MockSender::new(Ok(Some(rng.gen_range(1..u32::MAX))), Ok(()));
+
+        controller.process_signal(mock_signal_parser, data_arr.as_slice(), &mut time_source, &mut mock_tx);
+
+        assert_eq!(true, time_source.time_source_called);
+        assert_eq!(
+            Some((
+                Operation::Set,
+                DataInstructions::RemoteTimestamp(Conversation::Data(timestamp.seconds())),
+                timestamp)),
+            mock_tx.send_params);
+        assert_eq!(Some((SignalData::GetTimeStamp, true)), mock_signals_handler.borrow().on_signal_params);
+        // should not call other methods
+        assert_eq!(None, mock_signals_handler.borrow().on_signal_process_error_params);
+        assert_eq!(None, mock_tx.send_error_params);
+        assert_eq!(None, mock_signals_handler.borrow().on_signal_error_params);
+
+    }
+
+    #[test]
+    fn test_signals_proxy_proxies_send_timestamp_errors_to_handler_combined() {
+
+        let mock_signals_handler = Rc::new(RefCell::new(MockSignalsHandler::new()));
+        let mut rng = rand::thread_rng();
+        let data = SignalData::GetTimeStamp;
+
+        let data_arr = [0_u8, rng.gen(), rng.gen(), rng.gen()];
+
+        let errors = [Errors::OutOfRange, Errors::NoBufferAvailable, Errors::DmaError(DMAError::Overrun(())),
+            Errors::DmaError(DMAError::NotReady(())), Errors::DmaError(DMAError::SmallBuffer(())),
+            Errors::NotEnoughDataGot, Errors::InvalidDataSize, Errors::DmaBufferOverflow];
+
+        for error in errors {
+            let mut controller = SignalControllerImpl::new(mock_signals_handler.clone());
+
+            let data = SignalData::GetTimeStamp;
+            let timestamp = RelativeMillis::new(rng.gen_range(1..u32::MAX));
+            let mut time_source = MockTimeSource::new(timestamp);
+            let mut mock_tx = MockSender::new(Err(error), Ok(()));
+
+            let mock_signal_parser = MockSignalParser::new(Ok(data));
+
+            controller.process_signal(mock_signal_parser, data_arr.as_slice(), &mut time_source, &mut mock_tx);
+
+            assert_eq!(true, time_source.time_source_called);
+            assert_eq!(
+                Some((
+                    Operation::Set,
+                    DataInstructions::RemoteTimestamp(Conversation::Data(timestamp.seconds())),
+                    timestamp)),
+                mock_tx.send_params);
+            assert_eq!(Some((error, false, data)), mock_signals_handler.borrow().on_signal_process_error_params);
+            // should not call other methods
+            assert_eq!(None, mock_signals_handler.borrow().on_signal_params);
+            assert_eq!(None, mock_tx.send_error_params);
+            assert_eq!(None, mock_signals_handler.borrow().on_signal_error_params);
+        }
+
+    }
+
+    #[test]
+    fn test_signals_proxy_proxies_other_signals_to_handler_combined() {
+
+        let mut rng = rand::thread_rng();
+
+        let mock_signals_handler = Rc::new(RefCell::new(MockSignalsHandler::new()));
+
+        let datas = [
+            SignalData::ControlStateChanged(RelaySignalData::new (
+                RelativeSeconds::new(rng.gen_range(1..u32::MAX)),
+                rng.gen_range(0..15),
+                rng.gen_range(0..1) == 1,
+            )),
+            SignalData::MonitoringStateChanged(RelaySignalData::new (
+                RelativeSeconds::new(rng.gen_range(1..u32::MAX)),
+                rng.gen_range(0..15),
+                rng.gen_range(0..1) == 1,
+            )),
+            SignalData::StateFixTry(RelaySignalData::new (
+                RelativeSeconds::new(rng.gen_range(1..u32::MAX)),
+                rng.gen_range(0..15),
+                rng.gen_range(0..1) == 1,
+            )),
+            SignalData::RelayStateChanged(RelaySignalDataExt::new (
+                RelativeSeconds::new(rng.gen_range(1..u32::MAX)),
+                rng.gen_range(0..15),
+                rng.gen_range(0..1) == 1,
+                rng.gen_range(0..1) == 1,
+            )),
+        ];
+
+        for data in datas {
+
+            let data_arr = [0_u8, rng.gen(), rng.gen(), rng.gen()];
+            let mock_signal_parser = MockSignalParser::new(Ok(data));
+
+            let mut controller = SignalControllerImpl::new(mock_signals_handler.clone());
+
+            let timestamp = RelativeMillis::new(rng.gen_range(1..u32::MAX));
+            let mut time_source = MockTimeSource::new(timestamp);
+            let mut mock_tx = MockControlledSender::new(Ok(None), Ok(()));
+
+            controller.process_signal(mock_signal_parser, data_arr.as_slice(), &mut time_source, &mut mock_tx);
+
+
+            assert_eq!(Some((data, false)), mock_signals_handler.borrow().on_signal_params);
+            assert_eq!(false, time_source.time_source_called);
+            // should not call other methods
+            assert_eq!(None, mock_tx.send_params);
+            assert_eq!(None, mock_signals_handler.borrow().on_signal_process_error_params);
+            assert_eq!(None, mock_tx.send_error_params);
+            assert_eq!(None, mock_signals_handler.borrow().on_signal_error_params);
         }
     }
 

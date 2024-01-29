@@ -1,7 +1,6 @@
 [package]
 authors = ["Valerii Timakov <valtimakov@gmail.com>"]
 edition = "2018"
-readme = "README.md"
 name = "relay-controllers-hub"
 version = "0.1.0"
 
