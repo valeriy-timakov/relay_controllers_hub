@@ -32,6 +32,7 @@ pub enum Errors {
     WrongStateIncompatibleOperation(Operation),
     WrongIncomingOperation(Operation),
     DataOverflow,
+    IndexOverflow,
 }
 
 #[derive(Debug, PartialEq, Copy, Clone)]

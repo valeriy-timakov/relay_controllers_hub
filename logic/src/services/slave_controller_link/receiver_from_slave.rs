@@ -1,80 +1,85 @@
 #![deny(unsafe_code)]
 
 use crate::errors::Errors;
+use crate::hal_ext::rtc_wrapper::{RelativeMillis, RelativeTimestampSource};
 use crate::hal_ext::serial_transfer::Receiver;
 use crate::services::slave_controller_link::parsers::{PayloadParser, ResponseParser, PayloadParserResult, SignalParser};
 use crate::services::slave_controller_link::requests_controller::RequestsControllerRx;
-use crate::services::slave_controller_link::signals_controller::SignalController;
+use crate::services::slave_controller_link::signals_controller::{ControlledRequestSender, SignalController};
+use crate::services::slave_controller_link::transmitter_to_slave::ErrorsSender;
 
 pub trait ReceiverFromSlaveControllerAbstract<Rc, SC, RCR, EH, PP, SP, RP>
     where
         Rc: Receiver,
         SC: SignalController<SP>,
         RCR: RequestsControllerRx<RP>,
-        EH: Fn(Errors),
+        EH: ErrorHandler,
         PP: PayloadParser<SP, RP>,
         SP: SignalParser,
         RP: ResponseParser,
 {
 
-    fn slice(&mut self) -> (&mut Rc, &mut SC, &mut RCR, &PP);
+    fn slice(&mut self) -> (&mut Rc, &PP);
     fn error_handler(&mut self) -> &mut EH;
 
-    fn on_get_command(&mut self) {
-        let (rx, signal_controller, request_controller, parser_factory) = self.slice();
+    //(&mut self, payload: SP, data: &[u8])
+    fn on_get_command<TS: RelativeTimestampSource, S: ControlledRequestSender + ErrorsSender + RequestsControllerSource<RCR, RP>>(
+            &mut self, signal_controller: &mut SC, sender:  &mut S, time_source: &mut TS) {
+
+        let (rx, parser_factory) = self.slice();
         let res = rx.on_rx_transfer_interrupt(|data| {
             let (parser, data) = parser_factory.parse(data)?;
             match parser {
                 PayloadParserResult::ResponsePayload(response_parser) => {
-                    request_controller.process_response(response_parser, data);
+                    sender.requests_controller().process_response(response_parser, data);
                     Ok(())
                 }
                 PayloadParserResult::SignalPayload(signal_parser) => {
-                    signal_controller.process_signal(signal_parser, data);
+                    signal_controller.process_signal(signal_parser, data, time_source, sender);
                     Ok(())
                 }
             }
         });
         if res.is_err() {
-            (self.error_handler())(res.err().unwrap());
+            self.error_handler().on_error(res.err().unwrap());
         }
     }
 }
 
-pub struct ReceiverFromSlaveController<Rc, SC, RCR, EH, PP, SP, RP>
+pub trait ErrorHandler {
+    fn on_error(&mut self, error: Errors);
+}
+
+pub trait RequestsControllerSource<RCR: RequestsControllerRx<RP>, RP: ResponseParser> {
+    fn requests_controller(&mut self) -> &mut RCR;
+}
+
+pub struct ReceiverFromSlaveController<Rc, EH, PP, SP, RP>
     where
         Rc: Receiver,
-        SC: SignalController<SP>,
-        RCR: RequestsControllerRx<RP>,
-        EH: Fn(Errors),
+        EH: ErrorHandler,
         PP: PayloadParser<SP, RP>,
         SP: SignalParser,
         RP: ResponseParser,
 {
     rx: Rc,
-    signal_controller: SC,
-    requests_controller_rx: RCR,
     error_handler: EH,
     payload_parser: PP,
     _signal_parser: core::marker::PhantomData<SP>,
     _response_parser: core::marker::PhantomData<RP>,
 }
 
-impl < Rc, SC, RCR, EH, PP, SP, RP> ReceiverFromSlaveController<Rc, SC, RCR, EH, PP, SP, RP>
+impl < Rc, EH, PP, SP, RP> ReceiverFromSlaveController<Rc, EH, PP, SP, RP>
     where
         Rc: Receiver,
-        SC: SignalController<SP>,
-        RCR: RequestsControllerRx<RP>,
-        EH: Fn(Errors),
+        EH: ErrorHandler,
         PP: PayloadParser<SP, RP>,
         SP: SignalParser,
         RP: ResponseParser,
 {
-    pub fn new(rx: Rc, signal_controller: SC, requests_controller_rx: RCR, error_handler: EH, payload_parser: PP) -> Self {
+    pub fn new(rx: Rc, error_handler: EH, payload_parser: PP) -> Self {
         Self {
             rx,
-            signal_controller,
-            requests_controller_rx,
             error_handler,
             payload_parser,
             _signal_parser: core::marker::PhantomData,
@@ -89,19 +94,19 @@ impl < Rc, SC, RCR, EH, PP, SP, RP> ReceiverFromSlaveController<Rc, SC, RCR, EH,
 }
 
 impl <Rc, RCR, SC, EH, PP, SP, RP> ReceiverFromSlaveControllerAbstract<Rc, SC, RCR, EH, PP, SP, RP>
-    for ReceiverFromSlaveController<Rc, SC, RCR, EH, PP, SP, RP>
+    for ReceiverFromSlaveController<Rc, EH, PP, SP, RP>
     where
         Rc: Receiver,
         SC: SignalController<SP>,
         RCR: RequestsControllerRx<RP>,
-        EH: Fn(Errors),
+        EH: ErrorHandler,
         PP: PayloadParser<SP, RP>,
         SP: SignalParser,
         RP: ResponseParser,
 {
     #[inline(always)]
-    fn slice(&mut self) ->( &mut Rc, &mut SC, &mut RCR, &PP) {
-        (&mut self.rx, &mut self.signal_controller, &mut self.requests_controller_rx, &self.payload_parser)
+    fn slice(&mut self) ->( &mut Rc, &PP) {
+        (&mut self.rx, &self.payload_parser)
     }
 
     #[inline(always)]
@@ -118,7 +123,7 @@ mod tests {
     use alloc::vec::Vec;
     use core::cell::{RefCell};
     use rand::Rng;
-    use crate::services::slave_controller_link::domain::{DataInstructionCodes, DataInstructions, SignalData, Version};
+    use crate::services::slave_controller_link::domain::{DataInstructionCodes, DataInstructions, ErrorCode, Operation, SignalData, Version};
     use crate::services::slave_controller_link::parsers::{ResponseBodyParser, ResponseData, SignalParser};
     use super::*;
 
@@ -131,25 +136,25 @@ mod tests {
 
         let rx_error = Errors::DmaBufferOverflow;
         let mock_receiver = MockReceiver::defected(rx_error);
-        let handled_error: RefCell<Option<Errors>> = RefCell::new(None);
-        let mock_error_handler = |error: Errors| {
-            *handled_error.borrow_mut() = Some(error);
-        };
+        let mock_error_handler = MockErrorHandler::new();
 
         let error = Errors::NotEnoughDataGot;
         let mock_parser = MockPayloadParser::new(Err(error));
 
+        let mut signal_controller = MockSignalController::new();
+        let mut request_controller_rx = MockRequestsControllerRx::new();
         let mut controller =
-            ReceiverFromSlaveController::new(mock_receiver, MockSignalController::new(),
-                                             MockRequestsControllerRx::new(), &mock_error_handler,mock_parser);
+            ReceiverFromSlaveController::new(mock_receiver, mock_error_handler,mock_parser);
+        let mut time_source = MockTimeSource::new(RelativeMillis::new(rng.gen_range(1..u32::MAX)));
+        let mut mock_tx = MockSender::new(Ok(Some(rng.gen_range(1..u32::MAX))), Ok(()), request_controller_rx);
 
-        controller.on_get_command();
+        controller.on_get_command(&mut signal_controller, &mut mock_tx, &mut time_source);
 
-        assert_eq!(Some(rx_error), *handled_error.borrow());
+        assert_eq!(Some(rx_error),  controller.error_handler.on_error_params);
         //nothing other should be called
         assert_eq!(None, *controller.payload_parser.parse_params.borrow());
-        assert_eq!(None, controller.requests_controller_rx.process_response_params);
-        assert_eq!(None, controller.signal_controller.process_signal_params);
+        assert_eq!(None, mock_tx.requests_controller.process_response_params);
+        assert_eq!(None, signal_controller.process_signal_params);
     }
 
     #[test]
@@ -159,25 +164,25 @@ mod tests {
             rng.gen_range(1..u8::MAX), rng.gen_range(1..u8::MAX), rng.gen_range(1..u8::MAX)].to_vec();
 
         let mock_receiver = MockReceiver::new(data.to_vec());
-        let handled_error: RefCell<Option<Errors>> = RefCell::new(None);
-        let mock_error_handler = |error: Errors| {
-            *handled_error.borrow_mut() = Some(error);
-        };
+        let mock_error_handler = MockErrorHandler::new();
 
         let error = Errors::NotEnoughDataGot;
         let mock_parser = MockPayloadParser::new(Err(error));
 
+        let mut signal_controller = MockSignalController::new();
+        let mut request_controller_rx = MockRequestsControllerRx::new();
         let mut controller =
-            ReceiverFromSlaveController::new(mock_receiver, MockSignalController::new(),
-                                             MockRequestsControllerRx::new(), &mock_error_handler,mock_parser);
+            ReceiverFromSlaveController::new(mock_receiver, mock_error_handler,mock_parser);
+        let mut time_source = MockTimeSource::new(RelativeMillis::new(rng.gen_range(1..u32::MAX)));
+        let mut mock_tx = MockSender::new(Ok(Some(rng.gen_range(1..u32::MAX))), Ok(()), request_controller_rx);
 
-        controller.on_get_command();
+        controller.on_get_command(&mut signal_controller, &mut mock_tx, &mut time_source);
 
         assert_eq!(Some(data), *controller.payload_parser.parse_params.borrow());
-        assert_eq!(Some(error), *handled_error.borrow());
+        assert_eq!(Some(error),  controller.error_handler.on_error_params);
         //nothing other should be called
-        assert_eq!(None, controller.requests_controller_rx.process_response_params);
-        assert_eq!(None, controller.signal_controller.process_signal_params);
+        assert_eq!(None, mock_tx.requests_controller.process_response_params);
+        assert_eq!(None, signal_controller.process_signal_params);
     }
 
     #[test]
@@ -187,26 +192,26 @@ mod tests {
             rng.gen_range(1..u8::MAX), rng.gen_range(1..u8::MAX), rng.gen_range(1..u8::MAX)].to_vec();
 
         let mock_receiver = MockReceiver::new(data.to_vec());
-        let handled_error: RefCell<Option<Errors>> = RefCell::new(None);
-        let mock_error_handler = |error: Errors| {
-            *handled_error.borrow_mut() = Some(error);
-        };
+        let mock_error_handler = MockErrorHandler::new();
 
         let mock_response_parser = MockResponseParser{};
         let mock_parser = MockPayloadParser::new(
             Ok(PayloadParserResult::ResponsePayload(mock_response_parser)));
 
+        let mut signal_controller = MockSignalController::new();
+        let mut request_controller_rx = MockRequestsControllerRx::new();
         let mut controller =
-            ReceiverFromSlaveController::new(mock_receiver, MockSignalController::new(),
-                                             MockRequestsControllerRx::new(), &mock_error_handler,mock_parser);
+            ReceiverFromSlaveController::new(mock_receiver, mock_error_handler,mock_parser);
+        let mut time_source = MockTimeSource::new(RelativeMillis::new(rng.gen_range(1..u32::MAX)));
+        let mut mock_tx = MockSender::new(Ok(Some(rng.gen_range(1..u32::MAX))), Ok(()), request_controller_rx);
 
-        controller.on_get_command();
+        controller.on_get_command(&mut signal_controller, &mut mock_tx, &mut time_source);
 
-        assert_eq!(None, *handled_error.borrow());
+        assert_eq!(None,  controller.error_handler.on_error_params);
         assert_eq!(Some(data.clone()), *controller.payload_parser.parse_params.borrow());
-        assert_eq!(Some((mock_response_parser, data.clone())), controller.requests_controller_rx.process_response_params);
+        assert_eq!(Some((mock_response_parser, data.clone())), mock_tx.requests_controller.process_response_params);
         //nothing other should be called
-        assert_eq!(None, controller.signal_controller.process_signal_params);
+        assert_eq!(None, signal_controller.process_signal_params);
     }
 
     #[test]
@@ -216,27 +221,27 @@ mod tests {
             rng.gen_range(1..u8::MAX), rng.gen_range(1..u8::MAX), rng.gen_range(1..u8::MAX)].to_vec();
 
         let mock_receiver = MockReceiver::new(data.to_vec());
-        let handled_error: RefCell<Option<Errors>> = RefCell::new(None);
-        let mock_error_handler = |error: Errors| {
-            *handled_error.borrow_mut() = Some(error);
-        };
+        let mock_error_handler = MockErrorHandler::new();
 
         let mock_signal_parser = MockSignalParser{};
         let mock_parser = MockPayloadParser::new(
             Ok(PayloadParserResult::SignalPayload(mock_signal_parser)));
 
+        let mut signal_controller = MockSignalController::new();
+        let mut request_controller_rx = MockRequestsControllerRx::new();
         let mut controller =
-            ReceiverFromSlaveController::new(mock_receiver, MockSignalController::new(),
-                MockRequestsControllerRx::new(), &mock_error_handler,mock_parser);
+            ReceiverFromSlaveController::new(mock_receiver, mock_error_handler,mock_parser);
+        let mut time_source = MockTimeSource::new(RelativeMillis::new(rng.gen_range(1..u32::MAX)));
+        let mut mock_tx = MockSender::new(Ok(Some(rng.gen_range(1..u32::MAX))), Ok(()), request_controller_rx);
 
-        controller.on_get_command();
+        controller.on_get_command(&mut signal_controller, &mut mock_tx, &mut time_source);
 
-        assert_eq!(None, *handled_error.borrow());
+        assert_eq!(None, controller.error_handler.on_error_params);
         assert_eq!(Some(data.clone()), *controller.payload_parser.parse_params.borrow());
-        assert!(controller.signal_controller.process_signal_params.is_some());
-        assert_eq!(Some((mock_signal_parser, data.clone())), controller.signal_controller.process_signal_params);
+        assert!(signal_controller.process_signal_params.is_some());
+        assert_eq!(Some((mock_signal_parser, data.clone())), signal_controller.process_signal_params);
         //nothing other should be called
-        assert_eq!(None, controller.requests_controller_rx.process_response_params);
+        assert_eq!(None, mock_tx.requests_controller.process_response_params);
     }
 
     struct MockReceiver {
@@ -267,6 +272,24 @@ mod tests {
             }
         }
     }
+
+    struct MockErrorHandler {
+        on_error_params: Option<Errors>,
+    }
+
+    impl MockErrorHandler {
+        pub fn new() -> Self {
+            Self {
+                on_error_params: None,
+            }
+        }
+    }
+
+    impl ErrorHandler for MockErrorHandler {
+        fn on_error(&mut self, error: Errors) {
+            self.on_error_params = Some(error);
+        }
+    }
     struct MockSignalController {
         process_signal_params: Option<(MockSignalParser, Vec<u8>)>,
     }
@@ -280,8 +303,11 @@ mod tests {
     }
 
     impl SignalController<MockSignalParser> for MockSignalController {
-        fn process_signal(&mut self, parser: MockSignalParser, data: &[u8]) {
-            self.process_signal_params = Some((parser, data.to_vec()));
+        fn process_signal<TS: RelativeTimestampSource, S: ControlledRequestSender + ErrorsSender>
+            (&mut self, payload: MockSignalParser, data: &[u8], time_source: &mut TS, tx:  &mut S)
+        {
+            //TODO add time_source and tx to params
+            self.process_signal_params = Some((payload, data.to_vec()));
         }
     }
 
@@ -360,6 +386,68 @@ mod tests {
 
                 })
                 .map_err(|e| e.clone())
+        }
+    }
+    struct MockTimeSource {
+        time_source_called: bool,
+        time_source_result: RelativeMillis,
+    }
+
+    impl MockTimeSource {
+        pub fn new(time_source_result: RelativeMillis) -> Self {
+            Self {
+                time_source_called: false,
+                time_source_result,
+            }
+        }
+    }
+
+    impl RelativeTimestampSource for MockTimeSource {
+
+        fn get(&mut self) ->RelativeMillis {
+            self.time_source_called = true;
+            self.time_source_result
+        }
+    }
+
+    struct MockSender {
+        send_params: Option<(Operation, DataInstructions, RelativeMillis)>,
+        send_result: Result<Option<u32>, Errors>,
+        send_error_params: Option<(u8, ErrorCode)>,
+        send_error_result: Result<(), Errors>,
+        requests_controller: MockRequestsControllerRx,
+    }
+
+    impl MockSender {
+        pub fn new(send_result: Result<Option<u32>, Errors>, send_error_result: Result<(), Errors>,
+                   requests_controller: MockRequestsControllerRx) -> Self {
+            Self {
+                send_params: None,
+                send_result,
+                send_error_params: None,
+                send_error_result,
+                requests_controller
+            }
+        }
+    }
+
+    impl ControlledRequestSender for MockSender {
+        fn send(&mut self, operation: Operation, instruction: DataInstructions, timestamp: RelativeMillis) -> Result<Option<u32>, Errors> {
+            self.send_params = Some((operation, instruction, timestamp));
+            self.send_result
+        }
+    }
+
+    impl RequestsControllerSource<MockRequestsControllerRx, MockResponseParser> for MockSender {
+        fn requests_controller(&mut self) -> &mut MockRequestsControllerRx {
+            &mut self.requests_controller
+        }
+    }
+
+    impl ErrorsSender for MockSender {
+        fn send_error(&mut self,  instruction_code: u8, error_code: ErrorCode) -> Result<(), Errors> {
+            self.send_error_params = Some((instruction_code, error_code));
+            self.send_error_result
         }
     }
 

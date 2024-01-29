@@ -45,12 +45,23 @@ pub trait Rtc {
     fn set_datetime(&mut self, date: &PrimitiveDateTime) -> Result<(), Self::Error>;
 }
 
-pub struct RtcWrapper<RTC: Rtc> {
+pub trait RelativeTimestampSource {
+    fn get(&mut self) -> RelativeMillis;
+}
+
+pub struct DateTimeSource<RTC: Rtc> {
     rtc: RTC,
     base_date_time: Option<PrimitiveDateTime>,
 }
 
-impl<RTC: Rtc> RtcWrapper<RTC> {
+impl <RTC: Rtc> RelativeTimestampSource for DateTimeSource<RTC> {
+    #[inline(always)]
+    fn get(&mut self) -> RelativeMillis {
+        self.get_relative_timestamp()
+    }
+}
+
+impl<RTC: Rtc> DateTimeSource<RTC> {
     pub fn new(rtc: RTC) -> Self {
         Self { rtc, base_date_time: None }
     }
@@ -212,7 +223,7 @@ mod tests {
             time::Date::from_calendar_date(2020, Month::January, 1).unwrap(),
             time::Time::from_hms(0, 0, 0).unwrap());
         let mock = Rc::new(RefCell::new(TestRtc::new(start_date_time)));
-        let mut rtc_wrapper = RtcWrapper::new(mock.clone());
+        let mut rtc_wrapper = DateTimeSource::new(mock.clone());
         //should proxy to wrapped
         assert_eq!(rtc_wrapper.get_datetime(), start_date_time);
         assert_eq!(mock.borrow().get_calls(), 1);
@@ -224,7 +235,7 @@ mod tests {
             time::Date::from_calendar_date(2020, Month::January, 1).unwrap(),
             time::Time::from_hms(0, 0, 0).unwrap());
         let mock = Rc::new(RefCell::new(TestRtc::new(start_date_time)));
-        let mut rtc_wrapper = RtcWrapper::new(mock.clone());
+        let mut rtc_wrapper = DateTimeSource::new(mock.clone());
         let date_time_2 = PrimitiveDateTime::new(
             time::Date::from_calendar_date(2021, Month::February, 2).unwrap(),
             time::Time::from_hms(1, 1, 10).unwrap());
@@ -246,7 +257,7 @@ mod tests {
             time::Date::from_calendar_date(2020, Month::January, 1).unwrap(),
             time::Time::from_hms(0, 0, 0).unwrap());
         let mock = Rc::new(RefCell::new(TestRtc::new(start_date_time)));
-        let mut rtc_wrapper = RtcWrapper::new(mock.clone());
+        let mut rtc_wrapper = DateTimeSource::new(mock.clone());
         //first call should return 0
         assert_eq!(rtc_wrapper.get_relative_timestamp(), RelativeMillis(0));
         //should proxy to wrapped get_datetime
@@ -271,7 +282,7 @@ mod tests {
             time::Date::from_calendar_date(2020, Month::January, 1).unwrap(),
             time::Time::from_hms(0, 0, 0).unwrap());
         let mock = Rc::new(RefCell::new(TestRtc::new(start_date_time)));
-        let mut rtc_wrapper = RtcWrapper::new(mock.clone());
+        let mut rtc_wrapper = DateTimeSource::new(mock.clone());
         rtc_wrapper.get_relative_timestamp();
         //next calls should based on value set by first call
         let shift = RelativeMillis(shift_u32);
@@ -288,7 +299,7 @@ mod tests {
             time::Date::from_calendar_date(2020, Month::January, 1).unwrap(),
             time::Time::from_hms(0, 0, 0).unwrap());
         let mock = Rc::new(RefCell::new(TestRtc::new(start_date_time)));
-        let mut rtc_wrapper = RtcWrapper::new(mock.clone());
+        let mut rtc_wrapper = DateTimeSource::new(mock.clone());
         //first call should return 0
         assert_eq!(rtc_wrapper.get_relative_seconds(), RelativeSeconds(0));
         //should proxy to wrapped get_datetime
@@ -314,7 +325,7 @@ mod tests {
             time::Date::from_calendar_date(2020, Month::January, 1).unwrap(),
             time::Time::from_hms(0, 0, 0).unwrap());
         let mock = Rc::new(RefCell::new(TestRtc::new(start_date_time)));
-        let mut rtc_wrapper = RtcWrapper::new(mock.clone());
+        let mut rtc_wrapper = DateTimeSource::new(mock.clone());
         rtc_wrapper.get_relative_seconds();
         //next calls should based on value set by first call
         let shift = RelativeSeconds(shift_u32);

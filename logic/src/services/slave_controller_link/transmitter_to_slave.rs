@@ -4,16 +4,15 @@ use embedded_dma::ReadBuffer;
 use crate::errors::Errors;
 use crate::hal_ext::rtc_wrapper::RelativeMillis;
 use crate::hal_ext::serial_transfer::Sender;
-use crate::services::slave_controller_link::domain::{DataInstruction, ErrorCode, Operation, OperationCodes};
-use crate::services::slave_controller_link::requests_controller::{RequestsControllerTx, SentRequest};
+use crate::services::slave_controller_link::domain::{DataInstruction, DataInstructions, ErrorCode, Operation, OperationCodes};
+use crate::services::slave_controller_link::requests_controller::{RequestsControllerTx, ResponseHandler, SentRequest};
 use crate::utils::dma_read_buffer::BufferWriter;
 
-pub trait RequestsSender<RCT, I>
+pub trait RequestsSender<RCT>
     where
         RCT: RequestsControllerTx,
-        I: DataInstruction,
 {
-    fn send_request(&mut self, operation: Operation, instruction: I, timestamp: RelativeMillis, request_controller: &mut RCT) -> Result<Option<u32>, Errors>;
+    fn send_request<I: DataInstruction>(&mut self, operation: Operation, instruction: I, timestamp: RelativeMillis, request_controller: &mut RCT) -> Result<Option<u32>, Errors>;
 }
 
 pub trait ErrorsSender {
@@ -75,14 +74,13 @@ impl <TxBuff, S> ErrorsSender for TransmitterToSlaveController<TxBuff, S>
     }
 }
 
-impl <TxBuff, RCT, S, I> RequestsSender<RCT, I> for TransmitterToSlaveController<TxBuff, S>
+impl <TxBuff, RCT, S> RequestsSender<RCT> for TransmitterToSlaveController<TxBuff, S>
     where
         TxBuff: ReadBuffer + BufferWriter,
         RCT: RequestsControllerTx,
         S: Sender<TxBuff>,
-        I: DataInstruction,
 {
-    fn send_request(&mut self, operation: Operation, instruction: I, timestamp: RelativeMillis, request_controller: &mut RCT) -> Result<Option<u32>, Errors> {
+    fn send_request<I: DataInstruction>(&mut self, operation: Operation, instruction: I, timestamp: RelativeMillis, request_controller: &mut RCT) -> Result<Option<u32>, Errors> {
 
         let id = request_controller.check_request(instruction.code())?;
 

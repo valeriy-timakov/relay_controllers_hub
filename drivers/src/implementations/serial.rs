@@ -1,23 +1,56 @@
+#![allow(unsafe_code)]
 
-
-use stm32f4xx_hal::dma::{ChannelX, DMAError, MemoryToPeripheral, PeripheralToMemory, Transfer};
+use stm32f4xx_hal::dma::{ChannelX, DMAError, MemoryToPeripheral, PeripheralToMemory};
 use stm32f4xx_hal::dma::traits::{Channel, DMASet, PeriAddress, Stream};
-use stm32f4xx_hal::serial::{Instance, Rx, RxISR, RxListen, Tx, TxISR};
+use stm32f4xx_hal::serial::{Instance, Rx, RxISR, RxListen, Serial, SerialExt, Tx, TxISR};
 use stm32f4xx_hal::dma::config::DmaConfig;
-use logic::hal_ext::serial_transfer::{Decomposable, ReadableBuffer, RxTransferProxy, SerialTransfer, TxTransferProxy};
+use logic::hal_ext::serial_transfer::{ReadableBuffer, RxTransferProxy, SerialTransfer, TxTransferProxy};
 use logic::utils::dma_read_buffer::Buffer;
 use core::marker::PhantomData;
+use core::ops::{Deref, DerefMut};
+use embedded_dma::WriteBuffer;
 use logic::errors;
 
-
 const BUFFER_SIZE: usize = 256;
+
 pub type TxBuffer = Buffer<BUFFER_SIZE>;
-pub type RxBuffer = &'static mut [u8; BUFFER_SIZE];
+
+pub struct RxBuffer (&'static mut [u8]);
 
 impl ReadableBuffer for RxBuffer {
     fn slice_to(&self, to: usize) -> &[u8] {
-        &self[..to]
+        &self.0[..to]
     }
+}
+
+unsafe  impl WriteBuffer for RxBuffer {
+    type Word = u8;
+
+    unsafe fn write_buffer(&mut self) -> (*mut Self::Word, usize) {
+        self.0.write_buffer()
+    }
+}
+
+impl Deref for RxBuffer {
+    type Target = &'static mut [u8];
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl DerefMut for RxBuffer {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
+    }
+}
+
+pub struct Transfer<STREAM: Stream, const CHANNEL: u8, PERIPHERAL: PeriAddress, DIRECTION, BUF> {
+    inner: stm32f4xx_hal::dma::Transfer<STREAM, CHANNEL, PERIPHERAL, DIRECTION, BUF>,
+    _stream: PhantomData<STREAM>,
+    _peripheral: PhantomData<PERIPHERAL>,
+    _direction: PhantomData<DIRECTION>,
+    _buf: PhantomData<BUF>,
 }
 
 impl<U, STREAM, const CHANNEL: u8> TxTransferProxy<TxBuffer> for
@@ -40,12 +73,12 @@ Transfer<STREAM, CHANNEL, Tx<U>, MemoryToPeripheral, TxBuffer>
 
     #[inline(always)]
     fn clear_dma_interrupts(&mut self) {
-        self.clear_interrupts();
+        self.inner.clear_interrupts();
     }
 
     #[inline(always)]
     fn next_transfer(&mut self, buffer: TxBuffer) -> Result<TxBuffer, errors::DMAError<TxBuffer>> {
-        self.next_transfer(buffer)
+        self.inner.next_transfer(buffer)
             .map(|(buffer, _)| { buffer } )
             .map_err(convert_dma_error )
     }
@@ -74,7 +107,7 @@ Transfer<STREAM, CHANNEL, Rx<U>, PeripheralToMemory, RxBuffer>
 
     #[inline(always)]
     fn clear_dma_interrupts(&mut self) {
-        self.clear_interrupts();
+        self.inner.clear_interrupts();
     }
 
     #[inline(always)]
@@ -84,24 +117,24 @@ Transfer<STREAM, CHANNEL, Rx<U>, PeripheralToMemory, RxBuffer>
 
     #[inline(always)]
     fn next_transfer(&mut self, new_buf: RxBuffer) -> Result<RxBuffer, errors::DMAError<RxBuffer>> {
-        self.next_transfer(new_buf)
+        self.inner.next_transfer(new_buf)
             .map(|(buffer, _)| { buffer } )
             .map_err(convert_dma_error )
     }
 
     #[inline(always)]
     fn is_idle(&self) -> bool {
-        (self as &dyn RxISR).is_idle()
+        (&self.inner as &dyn RxISR).is_idle()
     }
 
     #[inline(always)]
     fn is_rx_not_empty(&self) -> bool {
-        (self as &dyn RxISR).is_rx_not_empty()
+        (&self.inner as &dyn RxISR).is_rx_not_empty()
     }
 
     #[inline(always)]
     fn clear_idle_interrupt(&mut self) {
-        (self as &dyn RxISR).clear_idle_interrupt()
+        (&self.inner as &dyn RxISR).clear_idle_interrupt()
     }
 
 }
@@ -142,9 +175,8 @@ impl<U, TxStream, const TX_CHANNEL: u8, RxStream, const RX_CHANNEL: u8> SerialTr
 {
 
     pub fn create_serial_transfer(
-        tx: Tx<U, u8>,
+        serial: Serial<U>,
         dma_tx_stream: TxStream,
-        rx: Rx<U>,
         dma_rx_stream: RxStream,
     ) -> SerialTransfer<
         Transfer<TxStream, TX_CHANNEL, Tx<U, u8>, MemoryToPeripheral, TxBuffer>,
@@ -152,10 +184,11 @@ impl<U, TxStream, const TX_CHANNEL: u8, RxStream, const RX_CHANNEL: u8> SerialTr
         TxBuffer, RxBuffer
     > {
 
+        let (tx, rx) = serial.split();
         let tx_buffer1 = Buffer::new(cortex_m::singleton!(: [u8; BUFFER_SIZE] = [0; BUFFER_SIZE]).unwrap());
         let tx_buffer2 = Buffer::new(cortex_m::singleton!(: [u8; BUFFER_SIZE] = [0; BUFFER_SIZE]).unwrap());
-        let rx_buffer1 = cortex_m::singleton!(: [u8; BUFFER_SIZE] = [0; BUFFER_SIZE]).unwrap();
-        let rx_buffer2 = cortex_m::singleton!(: [u8; BUFFER_SIZE] = [0; BUFFER_SIZE]).unwrap();
+        let rx_buffer1 = RxBuffer(cortex_m::singleton!(: [u8; BUFFER_SIZE] = [0; BUFFER_SIZE]).unwrap());
+        let rx_buffer2 = RxBuffer(cortex_m::singleton!(: [u8; BUFFER_SIZE] = [0; BUFFER_SIZE]).unwrap());
 
         SerialTransfer::new(
             Self::create_tx(tx, dma_tx_stream, tx_buffer1), tx_buffer2,
@@ -169,19 +202,26 @@ impl<U, TxStream, const TX_CHANNEL: u8, RxStream, const RX_CHANNEL: u8> SerialTr
         tx_buffer1: TxBuffer,
     ) -> Transfer<TxStream, TX_CHANNEL, Tx<U, u8>, MemoryToPeripheral, TxBuffer> {
 
-        let tx_transfer: Transfer<TxStream, TX_CHANNEL, Tx<U, u8>, MemoryToPeripheral, TxBuffer> = Transfer::init_memory_to_peripheral(
-            dma_stream,
-            tx,
-            tx_buffer1,
-            None,
-            DmaConfig::default()
-                .memory_increment(true)
-                .fifo_enable(true)
-                .fifo_error_interrupt(true)
-                .transfer_complete_interrupt(true),
-        );
+        let tx_transfer: stm32f4xx_hal::dma::Transfer<TxStream, TX_CHANNEL, Tx<U, u8>, MemoryToPeripheral, TxBuffer> =
+            stm32f4xx_hal::dma::Transfer::init_memory_to_peripheral(
+                dma_stream,
+                tx,
+                tx_buffer1,
+                None,
+                DmaConfig::default()
+                    .memory_increment(true)
+                    .fifo_enable(true)
+                    .fifo_error_interrupt(true)
+                    .transfer_complete_interrupt(true),
+            );
 
-        tx_transfer
+        Transfer {
+            inner: tx_transfer,
+            _stream: PhantomData,
+            _peripheral: PhantomData,
+            _direction: PhantomData,
+            _buf: PhantomData
+        }
     }
 
 
@@ -193,21 +233,28 @@ impl<U, TxStream, const TX_CHANNEL: u8, RxStream, const RX_CHANNEL: u8> SerialTr
 
         rx.listen_idle();
 
-        let mut rx_transfer: Transfer<RxStream, RX_CHANNEL, Rx<U, u8>, PeripheralToMemory, RxBuffer> = Transfer::init_peripheral_to_memory(
-            dma_stream,
-            rx,
-            rx_buffer1,
-            None,
-            DmaConfig::default()
-                .memory_increment(true)
-                .fifo_enable(true)
-                .fifo_error_interrupt(true)
-                .transfer_complete_interrupt(true),
-        );
+        let mut rx_transfer: stm32f4xx_hal::dma::Transfer<RxStream, RX_CHANNEL, Rx<U, u8>, PeripheralToMemory, RxBuffer> =
+            stm32f4xx_hal::dma::Transfer::init_peripheral_to_memory(
+                dma_stream,
+                rx,
+                rx_buffer1,
+                None,
+                DmaConfig::default()
+                    .memory_increment(true)
+                    .fifo_enable(true)
+                    .fifo_error_interrupt(true)
+                    .transfer_complete_interrupt(true),
+            );
 
         rx_transfer.start(|_stream| {});
 
-        rx_transfer
+        Transfer {
+            inner: rx_transfer,
+            _stream: PhantomData,
+            _peripheral: PhantomData,
+            _direction: PhantomData,
+            _buf: PhantomData
+        }
     }
 
 

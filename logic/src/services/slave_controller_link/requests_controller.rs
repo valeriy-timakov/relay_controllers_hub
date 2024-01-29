@@ -3,7 +3,7 @@
 
 use crate::errors::Errors;
 use crate::hal_ext::rtc_wrapper::{RelativeMillis };
-use crate::services::slave_controller_link::domain::{DataInstructionCodes, DataInstructions, ErrorCode, Operation, Version};
+use crate::services::slave_controller_link::domain::{DataInstructionCodes, DataInstructions, ErrorCode, Operation, OperationCodes, Version};
 use crate::services::slave_controller_link::parsers::{ResponseParser, ResponseBodyParser, ResponseData};
 
 const MAX_REQUESTS_COUNT: usize = 4;

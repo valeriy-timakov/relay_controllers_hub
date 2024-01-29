@@ -12,11 +12,9 @@ mod app {
     use stm32f4xx_hal::{
         prelude::*,
     };
-    use cortex_m_semihosting::hprintln;
     use dwt_systick_monotonic::DwtSystick;
     use embedded_alloc::Heap;
     use board::{ Board, ControllerLinkSlave6, InWork };
-    use time::{Date, PrimitiveDateTime, Time};
 
 
     #[global_allocator]
@@ -108,10 +106,9 @@ mod app {
     #[task(binds = USART6, priority=1, local = [], shared = [controller_link_slave6, in_work])]
     fn usart6(mut ctx: usart6::Context) {
         let usart6::SharedResources { mut controller_link_slave6, mut in_work } = ctx.shared;
-
-        controller_link_slave6.on_get_command(/*|| {
-            in_work.lock(|in_work: &mut InWork| { in_work.rtc.get_relative_timestamp() })
-        }*/);
+        in_work.lock(|in_work: &mut InWork| {
+            controller_link_slave6.on_get_command(&mut in_work.rtc)
+        });
     }
 
     #[task(binds = DMA2_STREAM2, priority=1, shared = [in_work])]
@@ -152,6 +149,12 @@ mod app {
         });
     }
 
+    #[task(binds = DMA2_STREAM0, priority=1, shared = [in_work], local = [])]
+    fn dma(mut ctx: dma::Context) {
+        ctx.shared.in_work.lock(|in_work: &mut InWork| {
+            in_work.on_dma();
+        });
+    }
 
     #[task(priority=1, shared = [in_work])]
     fn polling(mut ctx: polling::Context) {
@@ -159,13 +162,6 @@ mod app {
             in_work.on_polling();
         });
         polling::spawn_after(1.secs()).ok();
-    }
-
-    #[task(binds = DMA2_STREAM0, priority=1, shared = [in_work], local = [])]
-    fn dma(mut ctx: dma::Context) {
-        ctx.shared.in_work.lock(|in_work: &mut InWork| {
-            in_work.on_dma();
-        });
     }
 
 }

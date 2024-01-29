@@ -1,3 +1,3 @@
 #![deny(unsafe_code)]
-mod rtc;
-mod serial;
+pub mod rtc;
+pub mod serial;

@@ -549,6 +549,12 @@ pub enum Response {
 #[derive(PartialEq, Debug)]
 pub struct EmptyRequest;
 
+impl EmptyRequest {
+    pub fn new() -> Self {
+        Self {}
+    }
+}
+
 impl Request for EmptyRequest {}
 
 #[derive(PartialEq, Debug)]
@@ -776,9 +782,9 @@ impl AllData {
     pub(crate) fn add(&mut self, set_pin: u8, monitor_pin: u8, control_pin: u8, state: u8) -> Result<(), Errors> {
         if self.relays_count < MAX_RELAYS_COUNT {
             self.relays_settings[self.relays_count as usize] = RelaySettings::create(set_pin, monitor_pin, control_pin);
-            self.relays_count += 1;
             let from = self.relays_count * 4;
-            self.state_data.set_bits_u32(from, from + 4, state as u32);
+            self.state_data.set_byte(from, from + 3, state)?;
+            self.relays_count += 1;
             Ok(())
         } else {
             Err(Errors::RelayCountOverflow)
@@ -823,9 +829,10 @@ impl Serializable for AllData {
         let pairs_count = (self.relays_count + 1) / 2;
         for i in 0..pairs_count {
             let from = i * 8;
-            let state = self.state_data.bits_u8(from, from + 8)?;
+            let state = self.state_data.bits_u8(from, from + 7)?;
             buffer.add_u8(state)?;
         }
+
         Ok(())
     }
 
@@ -1395,7 +1402,7 @@ impl State {
         let mut state_data = BitsU64::new(0);
         for i in 0..bytes_count {
             let from = i * 8;
-            state_data.set_byte(from, from  + 8, data[i as usize]);
+            state_data.set_byte(from, from  + 7, data[i as usize]);
         }
         state_data
     }
@@ -1427,7 +1434,7 @@ impl Serializable for State {
         buffer.add_u8(self.count)?;
         let pairs_count = (self.count + 1) / 2;
         for i in 0..pairs_count {
-            buffer.add_u8( self.data.bits_u8(i * 8, (i + 1) * 8)? )?;
+            buffer.add_u8( self.data.bits_u8(i * 8, (i + 1) * 8 - 1)? )?;
         }
         Ok(())
     }
@@ -1587,6 +1594,10 @@ impl PinData {
     fn create(data: u8) -> Self {
         Self { data }
     }
+
+    pub fn data(&self) -> u8 {
+        self.data
+    }
 }
 
 #[derive(Copy, Clone, PartialEq, Debug)]
@@ -1618,6 +1629,18 @@ impl RelaySettings {
         buffer.add_u8(self.set_pin.data)?;
         buffer.add_u8(self.monitor_pin.data)?;
         buffer.add_u8(self.control_pin.data)
+    }
+
+    pub fn set_pin(&self) -> PinData {
+        self.set_pin
+    }
+
+    pub fn monitor_pin(&self) -> PinData {
+        self.monitor_pin
+    }
+
+    pub fn control_pin(&self) -> PinData {
+        self.control_pin
     }
 
 }

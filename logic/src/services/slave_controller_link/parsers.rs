@@ -7,12 +7,6 @@ use crate::services::slave_controller_link::domain::{AllData, ContactsWaitData, 
 
 
 
-pub fn init_slave_controllers() {
-    init_cache_getters();
-}
-
-
-
 const fn max_of(size1: usize, size2: usize, size3: usize, size4: usize, size5: usize) -> usize {
     let mut max = size1;
     if size2 > max { max = size2; }
@@ -99,7 +93,7 @@ const INSTRUCTIONS_COUNT: usize = DataInstructionCodes::Last as usize;
 static mut DF: [Option<Box<dyn CashedInstructionGetter>>; INSTRUCTIONS_COUNT] = [None, None, None, None, None, None, None,
     None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None];
 
-fn init_cache_getters() {
+pub fn init_cache_getters() {
     unsafe {
         DF[DataInstructionCodes::Settings as usize] = Some(Box::new(RelasySettingsCashedInstructionGetter));
         DF[DataInstructionCodes::ContactWaitData as usize] = Some(Box::new(ContactsWaitDataCashedInstructionGetter));
@@ -356,7 +350,8 @@ mod tests {
     use super::*;
     use rand::prelude::*;
     use crate::hal_ext::rtc_wrapper::RelativeSeconds;
-    use crate::services::slave_controller_link::domain::{Serializable, DataInstructions, RelaySignalData, RelaySignalDataExt, Signals, MAX_RELAYS_COUNT, State, StateFixSettings,  RelayState, CyclesStatistics, SwitchCountingSettings, RelaySingleState};
+    use crate::services::slave_controller_link::domain::{Serializable, DataInstructions, RelaySignalData, RelaySignalDataExt, Signals, MAX_RELAYS_COUNT, State, StateFixSettings, RelayState, CyclesStatistics, SwitchCountingSettings, RelaySingleState, Parser, RelaySettings};
+    use crate::utils::BitsU64;
     use crate::utils::dma_read_buffer::{Buffer, BufferWriter};
 
     #[test]
@@ -1030,23 +1025,28 @@ mod tests {
     }
 
 
+
+
     #[test]
     fn test_response_body_parser_parse_on_all_data() {
         let mut rng = rand::thread_rng();
-        let count = rng.gen_range(0..MAX_RELAYS_COUNT);
-        let mut data_object = AllData::new(rng.next_u32(),  rng.gen_range(0..count));
-        for _ in 0..count {
-            data_object.add(rng.gen_range(0..u8::MAX), rng.gen_range(0..u8::MAX), rng.gen_range(0..u8::MAX), rng.gen_range(0..16));
+        for count in 0 .. MAX_RELAYS_COUNT {
+            if count == 0 {
+                continue;
+            }
+            let mut data_object = AllData::new(rng.next_u32(), rng.gen_range(0..count));
+            for _ in 0..count {
+                data_object.add(rng.gen_range(0..u8::MAX), rng.gen_range(0..u8::MAX), rng.gen_range(0..u8::MAX), rng.gen_range(0..16));
+            }
+            let mut buffer = unsafe { Buffer::new(&mut BUFFER_ARR) };
+            AllData::serialize(&data_object, &mut buffer);
+
+            clear_static_buffer_index();
+            let parser = ResponseBodyParserImpl::create().unwrap();
+            let result = parser.parse(DataInstructionCodes::All, buffer.bytes());
+
+            assert_eq!(Ok(DataInstructions::All(Conversation::Data(data_object))), result);
         }
-        let mut buffer = unsafe { Buffer::new(&mut BUFFER_ARR ) };
-        data_object.serialize(&mut buffer);
-
-        clear_static_buffer_index();
-        let parser = ResponseBodyParserImpl::create().unwrap();
-
-        let result = parser.parse(DataInstructionCodes::All, buffer.bytes());
-
-        assert_eq!(Ok(DataInstructions::All(Conversation::Data(data_object))), result);
     }
 
 

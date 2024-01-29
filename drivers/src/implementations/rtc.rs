@@ -5,6 +5,14 @@ pub  struct RtcWrapper {
     rtc: stm32f4xx_hal::rtc::Rtc
 }
 
+impl RtcWrapper {
+    pub fn new(rtc: stm32f4xx_hal::rtc::Rtc) -> Self {
+        Self {
+            rtc
+        }
+    }
+}
+
 impl Rtc for RtcWrapper {
     type Error = stm32f4xx_hal::rtc::Error;
 
