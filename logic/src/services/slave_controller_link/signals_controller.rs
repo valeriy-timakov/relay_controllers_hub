@@ -82,7 +82,6 @@ impl <SH: SignalsHandler> SignalsPreHandler for SignalControllerImpl<SH> {
 
 #[cfg(test)]
 mod tests {
-    use alloc::boxed::Box;
     use alloc::rc::Rc;
     use alloc::vec::Vec;
     use core::cell::{ RefCell};
@@ -98,7 +97,6 @@ mod tests {
     fn test_signal_controller_should_try_to_parse_signal_code_and_report_error() {
         let mut rng = rand::thread_rng();
         let mut signal_controller = MockSignalController::new( );
-        let mut rng = rand::thread_rng();
         let error = Errors::CommandDataCorrupted;
         let data = [0_u8, rng.gen(), rng.gen(), rng.gen()];
         let mock_signal_parser = MockSignalParser::new(Err(error));
@@ -118,7 +116,6 @@ mod tests {
     fn test_signal_controller_should_proxy_parsed_signal_on_success() {
         let mut rng = rand::thread_rng();
         let mut signal_controller = MockSignalController::new( );
-        let mut rng = rand::thread_rng();
         let result = SignalData::GetTimeStamp;
         let data = [0_u8, rng.gen(), rng.gen(), rng.gen()];
         let mock_signal_parser = MockSignalParser::new(Ok(result));
@@ -197,7 +194,6 @@ mod tests {
 
         let mock_signals_handler = Rc::new(RefCell::new(MockSignalsHandler::new()));
         let mut rng = rand::thread_rng();
-        let data = SignalData::GetTimeStamp;
 
         let errors = [Errors::OutOfRange, Errors::NoBufferAvailable, Errors::DmaError(DMAError::Overrun(())),
             Errors::DmaError(DMAError::NotReady(())), Errors::DmaError(DMAError::SmallBuffer(())),
@@ -298,7 +294,6 @@ mod tests {
 
         let timestamp = RelativeMillis::new(rng.gen_range(1..u32::MAX));
         let mut time_source = MockTimeSource::new(timestamp);
-        let mut mock_tx = MockSender::new(Ok(Some(rng.gen_range(1..u32::MAX))), Ok(()));
 
         for send_error_success in [true, false] {
             let mut mock_tx = MockSender::new(Err(Errors::IndexOverflow),
@@ -355,7 +350,6 @@ mod tests {
 
         let mock_signals_handler = Rc::new(RefCell::new(MockSignalsHandler::new()));
         let mut rng = rand::thread_rng();
-        let data = SignalData::GetTimeStamp;
 
         let data_arr = [0_u8, rng.gen(), rng.gen(), rng.gen()];
 
@@ -579,10 +573,6 @@ mod tests {
             self.tx_id = Some(send_res.ok().unwrap().unwrap());
             self.on_signal_parse_error_parameters = Some((error, data.to_vec()));
         }
-    }
-
-    fn fake_call_send_to_get_id<T: ControlledRequestSender + ?Sized>(tx: Box<&mut T>) -> Result<Option<u32>, Errors> {
-        (*tx).send(Operation::None, DataInstructions::Id(Conversation::Request(EmptyRequest::new())), RelativeMillis::new(0))
     }
 
     struct MockTimeSource {

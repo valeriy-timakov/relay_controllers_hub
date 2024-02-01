@@ -1,7 +1,7 @@
 #![deny(unsafe_code)]
 
 use crate::errors::Errors;
-use crate::hal_ext::rtc_wrapper::{RelativeMillis, RelativeTimestampSource};
+use crate::hal_ext::rtc_wrapper::RelativeTimestampSource;
 use crate::hal_ext::serial_transfer::Receiver;
 use crate::services::slave_controller_link::parsers::{PayloadParser, ResponseParser, PayloadParserResult, SignalParser};
 use crate::services::slave_controller_link::requests_controller::RequestsControllerRx;
@@ -123,6 +123,7 @@ mod tests {
     use alloc::vec::Vec;
     use core::cell::{RefCell};
     use rand::Rng;
+    use crate::hal_ext::rtc_wrapper::RelativeMillis;
     use crate::services::slave_controller_link::domain::{DataInstructionCodes, DataInstructions, ErrorCode, Operation, SignalData, Version};
     use crate::services::slave_controller_link::parsers::{ResponseBodyParser, ResponseData, SignalParser};
     use super::*;
@@ -131,8 +132,6 @@ mod tests {
     #[test]
     fn test_on_get_command_should_report_rx_error() {
         let mut rng = rand::thread_rng();
-        let data = [rng.gen_range(1..u8::MAX), rng.gen_range(1..u8::MAX),
-            rng.gen_range(1..u8::MAX), rng.gen_range(1..u8::MAX), rng.gen_range(1..u8::MAX)].to_vec();
 
         let rx_error = Errors::DmaBufferOverflow;
         let mock_receiver = MockReceiver::defected(rx_error);
@@ -142,7 +141,7 @@ mod tests {
         let mock_parser = MockPayloadParser::new(Err(error));
 
         let mut signal_controller = MockSignalController::new();
-        let mut request_controller_rx = MockRequestsControllerRx::new();
+        let request_controller_rx = MockRequestsControllerRx::new();
         let mut controller =
             ReceiverFromSlaveController::new(mock_receiver, mock_error_handler,mock_parser);
         let mut time_source = MockTimeSource::new(RelativeMillis::new(rng.gen_range(1..u32::MAX)));
@@ -170,7 +169,7 @@ mod tests {
         let mock_parser = MockPayloadParser::new(Err(error));
 
         let mut signal_controller = MockSignalController::new();
-        let mut request_controller_rx = MockRequestsControllerRx::new();
+        let request_controller_rx = MockRequestsControllerRx::new();
         let mut controller =
             ReceiverFromSlaveController::new(mock_receiver, mock_error_handler,mock_parser);
         let mut time_source = MockTimeSource::new(RelativeMillis::new(rng.gen_range(1..u32::MAX)));
@@ -199,7 +198,7 @@ mod tests {
             Ok(PayloadParserResult::ResponsePayload(mock_response_parser)));
 
         let mut signal_controller = MockSignalController::new();
-        let mut request_controller_rx = MockRequestsControllerRx::new();
+        let request_controller_rx = MockRequestsControllerRx::new();
         let mut controller =
             ReceiverFromSlaveController::new(mock_receiver, mock_error_handler,mock_parser);
         let mut time_source = MockTimeSource::new(RelativeMillis::new(rng.gen_range(1..u32::MAX)));
@@ -228,7 +227,7 @@ mod tests {
             Ok(PayloadParserResult::SignalPayload(mock_signal_parser)));
 
         let mut signal_controller = MockSignalController::new();
-        let mut request_controller_rx = MockRequestsControllerRx::new();
+        let request_controller_rx = MockRequestsControllerRx::new();
         let mut controller =
             ReceiverFromSlaveController::new(mock_receiver, mock_error_handler,mock_parser);
         let mut time_source = MockTimeSource::new(RelativeMillis::new(rng.gen_range(1..u32::MAX)));
@@ -304,7 +303,7 @@ mod tests {
 
     impl SignalController<MockSignalParser> for MockSignalController {
         fn process_signal<TS: RelativeTimestampSource, S: ControlledRequestSender + ErrorsSender>
-            (&mut self, payload: MockSignalParser, data: &[u8], time_source: &mut TS, tx:  &mut S)
+            (&mut self, payload: MockSignalParser, data: &[u8], _: &mut TS, _:  &mut S)
         {
             //TODO add time_source and tx to params
             self.process_signal_params = Some((payload, data.to_vec()));
@@ -333,7 +332,7 @@ mod tests {
     struct MockSignalParser {}
 
     impl SignalParser for MockSignalParser {
-        fn parse(&self, data: &[u8]) -> Result<SignalData, Errors> {
+        fn parse(&self, _: &[u8]) -> Result<SignalData, Errors> {
             unimplemented!()
         }
     }
@@ -346,16 +345,16 @@ mod tests {
     struct MockResponseParser {}
 
     impl ResponseParser for MockResponseParser {
-        fn parse<'a>(&self, data: &'a[u8], slave_controller_version: Version) -> Result<(ResponseData, &'a[u8]), Errors> {
+        fn parse<'a>(&self, _: &'a[u8], _: Version) -> Result<(ResponseData, &'a[u8]), Errors> {
             unimplemented!()
         }
     }
 
     impl ResponseBodyParser for MockResponseBodyParser {
-        fn request_needs_cache(&self, instruction: DataInstructionCodes) -> bool {
+        fn request_needs_cache(&self, _: DataInstructionCodes) -> bool {
             unimplemented!()
         }
-        fn parse(&self, instruction: DataInstructionCodes, data: &[u8]) -> Result<DataInstructions, Errors> {
+        fn parse(&self, _: DataInstructionCodes, _: &[u8]) -> Result<DataInstructions, Errors> {
             unimplemented!()
         }
     }

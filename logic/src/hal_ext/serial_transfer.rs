@@ -264,7 +264,6 @@ impl<T, BUF> Sender<BUF> for TxTransfer<T, BUF>
 mod tests {
     use core::cell::RefCell;
     use core::cmp::min;
-    use core::ops::DerefMut;
     use super::*;
     use std::rc::Rc;
     use quickcheck_macros::quickcheck;
@@ -436,27 +435,27 @@ mod tests {
     impl BufferWriter for MockTxBuffer {
 
 
-        fn add_str(&mut self, string: &str) -> Result<(), Errors> {
+        fn add_str(&mut self, _: &str) -> Result<(), Errors> {
             Ok(())
         }
 
-        fn add(&mut self, data: &[u8]) -> Result<(), Errors> {
+        fn add(&mut self, _: &[u8]) -> Result<(), Errors> {
             Ok(())
         }
 
-        fn add_u8(&mut self, byte: u8) -> Result<(), Errors> {
+        fn add_u8(&mut self, _: u8) -> Result<(), Errors> {
             Ok(())
         }
 
-        fn add_u16(&mut self, value: u16) -> Result<(), Errors> {
+        fn add_u16(&mut self, _: u16) -> Result<(), Errors> {
             Ok(())
         }
 
-        fn add_u32(&mut self, value: u32) -> Result<(), Errors> {
+        fn add_u32(&mut self, _: u32) -> Result<(), Errors> {
             Ok(())
         }
 
-        fn add_u64(&mut self, value: u64) -> Result<(), Errors> {
+        fn add_u64(&mut self, _: u64) -> Result<(), Errors> {
             Ok(())
         }
 
@@ -478,27 +477,18 @@ mod tests {
 
     struct MockTxTransfer {
         clear_dma_interrupts_calls: usize,
-        clear_idle_interrupt_calls: usize,
         fifo_error: bool,
         transfer_complete: bool,
-        idle: bool,
-        read_bytes_count: usize,
-        rx_not_empty: bool,
         return_error_on_next: bool,
         curr_buf: Option<MockTxBuffer>,
     }
 
     impl  MockTxTransfer {
-        fn new(fifo_error: bool, transfer_complete: bool, idle: bool, rx_not_empty: bool,
-               return_error_on_next: bool, read_bytes_count: usize, curr_buf: MockTxBuffer) -> Self {
+        fn new(fifo_error: bool, transfer_complete: bool, return_error_on_next: bool, curr_buf: MockTxBuffer) -> Self {
             MockTxTransfer {
                 clear_dma_interrupts_calls: 0,
-                clear_idle_interrupt_calls: 0,
                 fifo_error,
                 transfer_complete,
-                idle,
-                read_bytes_count,
-                rx_not_empty,
                 return_error_on_next,
                 curr_buf: Some(curr_buf),
             }
@@ -653,10 +643,11 @@ mod tests {
                 for i in 0..returned_bytes_count_res {
                     read_data[i] = slice[i];
                 }
-                &read_data[..returned_bytes_count_res].copy_from_slice(slice);
+                read_data[..returned_bytes_count_res].copy_from_slice(slice);
                 Ok(())
             } );
 
+            assert_eq!(Ok(()), res);
             assert_eq!(returned_bytes_count, returned_bytes_count_res);
             assert_eq!(&test_data[..returned_bytes_count_res], &read_data[..returned_bytes_count_res]);
 
@@ -683,16 +674,15 @@ mod tests {
     fn create_testable_rx_transfer() ->
                                      (RxTransfer<Rc<RefCell<MockRxTransfer>>, MockRxBuffer>, Rc<RefCell<MockRxTransfer>>)
     {
-        let mut buf1 = MockRxBuffer::new(1);
-        let mut buf2 = MockRxBuffer::new(2);
+        let buf1 = MockRxBuffer::new(1);
+        let buf2 = MockRxBuffer::new(2);
 
         let transfer1 = MockRxTransfer::new(
             false, false, false, false,
             false, 0, buf1);
         let mock = Rc::new(RefCell::new(transfer1));
 
-        let transfer = mock.clone().borrow_mut().deref_mut();
-        let mut rx_transfer = RxTransfer::new(mock.clone(), buf2);
+        let rx_transfer = RxTransfer::new(mock.clone(), buf2);
 
         (rx_transfer, mock)
 
@@ -714,12 +704,11 @@ mod tests {
 
     #[test]
     fn test_start_transfer_should_return_error_if_transfer_not_ended()  {
-        let (mut tx_transfer, mock) = create_testable_tx_transfer();
+        let (mut tx_transfer, _) = create_testable_tx_transfer();
 
         assert_eq!(Ok(()), tx_transfer.start_transfer(|_| { Ok(()) }));
 
         assert_eq!(Err(Errors::TransferInProgress), tx_transfer.start_transfer(|_| { Ok(()) }));
-
     }
 
     #[test]
@@ -786,8 +775,9 @@ mod tests {
         assert_eq!(true, tx_transfer.last_transfer_ended());
         assert_eq!(true, tx_transfer.fifo_error());
 
-        let res = tx_transfer.start_transfer(|buff| { Ok(()) });
+        let res = tx_transfer.start_transfer(|_| { Ok(()) });
 
+        assert_eq!(Ok(()), res);
         assert_eq!(false, tx_transfer.last_transfer_ended());
         assert_eq!(false, tx_transfer.fifo_error());
 
@@ -799,13 +789,10 @@ mod tests {
         let buf1 = MockTxBuffer::new(1);
         let buf2 = MockTxBuffer::new(2);
 
-        let transfer1 = MockTxTransfer::new(
-            false, false, false, false,
-            false, 0, buf1);
+        let transfer1 = MockTxTransfer::new(false, false, false, buf1);
         let mock = Rc::new(RefCell::new(transfer1));
 
-        let transfer = mock.clone().borrow_mut().deref_mut();
-        let mut tx_transfer = TxTransfer::new(mock.clone(), buf2);
+        let tx_transfer = TxTransfer::new(mock.clone(), buf2);
 
         (tx_transfer, mock)
 

@@ -173,11 +173,6 @@ mod tests {
             self.set_calls
         }
 
-        pub fn clear_calls(&mut self) {
-            self.get_calls = 0;
-            self.set_calls = 0;
-        }
-
         pub fn set_time_passed(&mut self, millis: RelativeMillis) {
             self.date_time = self.date_time + time::Duration::new(
                 (millis.0 / 1000) as i64, (millis.0 % 1000) as i32 * 1000000);
@@ -186,7 +181,6 @@ mod tests {
 
     #[derive(Debug, PartialEq)]
     enum TestRtcError {
-        InvalidDate,
     }
 
     impl Rtc for TestRtc {
@@ -212,8 +206,7 @@ mod tests {
         }
 
         fn set_datetime(&mut self, date: &PrimitiveDateTime) -> Result<(), Self::Error> {
-            self.borrow_mut().set_datetime(date);
-            Ok(())
+            self.borrow_mut().set_datetime(date)
         }
     }
 

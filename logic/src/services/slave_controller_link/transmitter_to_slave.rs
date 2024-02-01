@@ -4,8 +4,8 @@ use embedded_dma::ReadBuffer;
 use crate::errors::Errors;
 use crate::hal_ext::rtc_wrapper::RelativeMillis;
 use crate::hal_ext::serial_transfer::Sender;
-use crate::services::slave_controller_link::domain::{DataInstruction, DataInstructions, ErrorCode, Operation, OperationCodes};
-use crate::services::slave_controller_link::requests_controller::{RequestsControllerTx, ResponseHandler, SentRequest};
+use crate::services::slave_controller_link::domain::{DataInstruction, ErrorCode, Operation, OperationCodes};
+use crate::services::slave_controller_link::requests_controller::{RequestsControllerTx, SentRequest};
 use crate::utils::dma_read_buffer::BufferWriter;
 
 pub trait RequestsSender<RCT>

@@ -350,8 +350,7 @@ mod tests {
     use super::*;
     use rand::prelude::*;
     use crate::hal_ext::rtc_wrapper::RelativeSeconds;
-    use crate::services::slave_controller_link::domain::{Serializable, DataInstructions, RelaySignalData, RelaySignalDataExt, Signals, MAX_RELAYS_COUNT, State, StateFixSettings, RelayState, CyclesStatistics, SwitchCountingSettings, RelaySingleState, Parser, RelaySettings};
-    use crate::utils::BitsU64;
+    use crate::services::slave_controller_link::domain::{Serializable, DataInstructions, RelaySignalData, RelaySignalDataExt, Signals, MAX_RELAYS_COUNT, State, StateFixSettings, RelayState, CyclesStatistics, SwitchCountingSettings, RelaySingleState};
     use crate::utils::dma_read_buffer::{Buffer, BufferWriter};
 
     #[test]
@@ -368,7 +367,6 @@ mod tests {
     fn test_signal_parser_parse_should_return_error_on_wrong_signal_code() {
         let all_signal_codes = ALL_SIGNALS.map(|s| s as u8);
         let parser = SignalParserImpl {};
-        let datas = Vec::from([[1].to_vec(), [1, 2, 3, 4, 5].to_vec()]);
 
         for code in 0_u8..u8::MAX {
             if !all_signal_codes.contains(&code) {
@@ -405,11 +403,6 @@ mod tests {
     #[test]
     fn test_signal_parser_parse_extended_relay_signals_should_parse_relay_signal_data() {
         for _ in 0..1 {
-            let mut rng = rand::thread_rng();
-            let relay_data = RelaySignalDataExt::new(
-                RelativeSeconds::new(rng.gen_range(1..u32::MAX)),
-                rng.gen_range(0..15_u8), rng.gen_range(0..2) == 1, rng.gen_range(0..2) == 1);
-
             let relay_data = RelaySignalDataExt::new(
                 RelativeSeconds::new(1), 12, false, true);
 
@@ -521,7 +514,6 @@ mod tests {
     #[test]
     fn test_response_parser_parse_on_error_response_not_enough_data() {
         for version in [Version::V1, Version::V2] {
-            let mut rng = rand::thread_rng();
             for error_code in ALL_ERROR_CODES {
                 let data = [error_code.discriminant()];
                 let parser = ResponseParserImpl::new(Operation::Error);
@@ -539,7 +531,6 @@ mod tests {
 
     #[test]
     fn test_response_parser_parse_on_error_response_v1() {
-        let mut rng = rand::thread_rng();
         for instruction in ALL_INSTRUCTIONS {
             for error_code in ALL_ERROR_CODES {
                 let data = [error_code.discriminant(), instruction as u8];
@@ -699,12 +690,12 @@ mod tests {
         let mut data_object = RelaysSettings::new();
         let count = rng.gen_range(0..MAX_RELAYS_COUNT);
         for _ in 0..count {
-            data_object.add(rng.gen_range(0..u8::MAX), rng.gen_range(0..u8::MAX), rng.gen_range(0..u8::MAX));
+            data_object.add(rng.gen_range(0..u8::MAX), rng.gen_range(0..u8::MAX), rng.gen_range(0..u8::MAX)).unwrap();
         }
 
         let mut buffer = unsafe { Buffer::new(&mut BUFFER_ARR ) };
 
-        data_object.serialize(&mut buffer);
+        data_object.serialize(&mut buffer).unwrap();
 
         clear_static_buffer_index();
         let parser = ResponseBodyParserImpl::create().unwrap();
@@ -719,7 +710,7 @@ mod tests {
         let mut rng = thread_rng();
         let data_object = State::create(rng.gen_range(0..15), rng.next_u64()).unwrap();
         let mut buffer = unsafe { Buffer::new(&mut BUFFER_ARR) };
-        data_object.serialize(&mut buffer);
+        data_object.serialize(&mut buffer).unwrap();
         clear_static_buffer_index();
         let parser = ResponseBodyParserImpl::create().unwrap();
 
@@ -733,7 +724,7 @@ mod tests {
         let mut rng = thread_rng();
         let data_object: u32 = rng.next_u32();
         let mut buffer = unsafe { Buffer::new(&mut BUFFER_ARR) };
-        data_object.serialize(&mut buffer);
+        data_object.serialize(&mut buffer).unwrap();
         clear_static_buffer_index();
         let parser = ResponseBodyParserImpl::create().unwrap();
 
@@ -749,7 +740,7 @@ mod tests {
 
         let mut buffer = unsafe { Buffer::new(&mut BUFFER_ARR ) };
 
-        data_object.serialize(&mut buffer);
+        data_object.serialize(&mut buffer).unwrap();
 
         clear_static_buffer_index();
         let parser = ResponseBodyParserImpl::create().unwrap();
@@ -766,7 +757,7 @@ mod tests {
 
         let mut buffer = unsafe { Buffer::new(&mut BUFFER_ARR ) };
 
-        data_object.serialize(&mut buffer);
+        data_object.serialize(&mut buffer).unwrap();
 
         clear_static_buffer_index();
         let parser = ResponseBodyParserImpl::create().unwrap();
@@ -788,7 +779,7 @@ mod tests {
 
         let mut buffer = unsafe { Buffer::new(&mut BUFFER_ARR ) };
 
-        data_object.serialize(&mut buffer);
+        data_object.serialize(&mut buffer).unwrap();
 
         clear_static_buffer_index();
         let parser = ResponseBodyParserImpl::create().unwrap();
@@ -809,7 +800,7 @@ mod tests {
 
         let mut buffer = unsafe { Buffer::new(&mut BUFFER_ARR ) };
 
-        data_object.serialize(&mut buffer);
+        data_object.serialize(&mut buffer).unwrap();
 
         clear_static_buffer_index();
         let parser = ResponseBodyParserImpl::create().unwrap();
@@ -826,7 +817,7 @@ mod tests {
 
         let mut buffer = unsafe { Buffer::new(&mut BUFFER_ARR ) };
 
-        data_object.serialize(&mut buffer);
+        data_object.serialize(&mut buffer).unwrap();
 
         clear_static_buffer_index();
         let parser = ResponseBodyParserImpl::create().unwrap();
@@ -843,7 +834,7 @@ mod tests {
 
         let mut buffer = unsafe { Buffer::new(&mut BUFFER_ARR ) };
 
-        data_object.serialize(&mut buffer);
+        data_object.serialize(&mut buffer).unwrap();
 
         clear_static_buffer_index();
         let parser = ResponseBodyParserImpl::create().unwrap();
@@ -864,7 +855,7 @@ mod tests {
 
         let mut buffer = unsafe { Buffer::new(&mut BUFFER_ARR ) };
 
-        data_object.serialize(&mut buffer);
+        data_object.serialize(&mut buffer).unwrap();
 
         clear_static_buffer_index();
         let parser = ResponseBodyParserImpl::create().unwrap();
@@ -878,15 +869,15 @@ mod tests {
     fn test_response_body_parser_parse_on_fix_data() {
         let mut rng = thread_rng();
         let mut data_object = FixDataContainer::new();
-        data_object.add_fix_data(rng.gen_range(0..u8::MAX), rng.next_u32());
-        data_object.add_fix_data(rng.gen_range(0..u8::MAX), rng.next_u32());
-        data_object.add_fix_data(rng.gen_range(0..u8::MAX), rng.next_u32());
-        data_object.add_fix_data(rng.gen_range(0..u8::MAX), rng.next_u32());
-        data_object.add_fix_data(rng.gen_range(0..u8::MAX), rng.next_u32());
+        data_object.add_fix_data(rng.gen_range(0..u8::MAX), rng.next_u32()).unwrap();
+        data_object.add_fix_data(rng.gen_range(0..u8::MAX), rng.next_u32()).unwrap();
+        data_object.add_fix_data(rng.gen_range(0..u8::MAX), rng.next_u32()).unwrap();
+        data_object.add_fix_data(rng.gen_range(0..u8::MAX), rng.next_u32()).unwrap();
+        data_object.add_fix_data(rng.gen_range(0..u8::MAX), rng.next_u32()).unwrap();
 
         let mut buffer = unsafe { Buffer::new(&mut BUFFER_ARR ) };
 
-        data_object.serialize(&mut buffer);
+        data_object.serialize(&mut buffer).unwrap();
 
         clear_static_buffer_index();
         let parser = ResponseBodyParserImpl::create().unwrap();
@@ -900,14 +891,14 @@ mod tests {
     fn test_response_body_parser_parse_on_switch_data() {
         let mut rng = thread_rng();
         let mut data_object = StateSwitchDatas::new();
-        data_object.add_switch_data(rng.gen_range(0..u8::MAX), rng.next_u32());
-        data_object.add_switch_data(rng.gen_range(0..u8::MAX), rng.next_u32());
-        data_object.add_switch_data(rng.gen_range(0..u8::MAX), rng.next_u32());
-        data_object.add_switch_data(rng.gen_range(0..u8::MAX), rng.next_u32());
+        data_object.add_switch_data(rng.gen_range(0..u8::MAX), rng.next_u32()).unwrap();
+        data_object.add_switch_data(rng.gen_range(0..u8::MAX), rng.next_u32()).unwrap();
+        data_object.add_switch_data(rng.gen_range(0..u8::MAX), rng.next_u32()).unwrap();
+        data_object.add_switch_data(rng.gen_range(0..u8::MAX), rng.next_u32()).unwrap();
 
         let mut buffer = unsafe { Buffer::new(&mut BUFFER_ARR ) };
 
-        data_object.serialize(&mut buffer);
+        data_object.serialize(&mut buffer).unwrap();
 
         clear_static_buffer_index();
         let parser = ResponseBodyParserImpl::create().unwrap();
@@ -919,30 +910,30 @@ mod tests {
 
     #[test]
     fn test_response_body_parser_parse_on_cycle_statistics() {
-        let mut rng = thread_rng();
-        let mut data_object = CyclesStatistics::new(rng.gen_range(0..u16::MAX), rng.gen_range(0..u16::MAX),
-                                                    rng.gen_range(0..u16::MAX), rng.next_u64());
+            let mut rng = thread_rng();
+            let data_object = CyclesStatistics::new(rng.gen_range(0..u16::MAX),
+                            rng.gen_range(0..u16::MAX), rng.gen_range(0..u16::MAX), rng.next_u64());
 
-        let mut buffer = unsafe { Buffer::new(&mut BUFFER_ARR) };
+            let mut buffer = unsafe { Buffer::new(&mut BUFFER_ARR) };
 
-        data_object.serialize(&mut buffer);
+            data_object.serialize(&mut buffer).unwrap();
 
-        clear_static_buffer_index();
-        let parser = ResponseBodyParserImpl::create().unwrap();
+            clear_static_buffer_index();
+            let parser = ResponseBodyParserImpl::create().unwrap();
 
-        let result = parser.parse(DataInstructionCodes::CyclesStatistics, buffer.bytes());
+            let result = parser.parse(DataInstructionCodes::CyclesStatistics, buffer.bytes());
 
-        assert_eq!(Ok(DataInstructions::CyclesStatistics(Conversation::Data(data_object))), result);
+            assert_eq!(Ok(DataInstructions::CyclesStatistics(Conversation::Data(data_object))), result);
     }
 
     #[test]
     fn test_response_body_parser_parse_on_switch_counting_settings() {
         let mut rng = thread_rng();
-        let mut data_object = SwitchCountingSettings::new(rng.gen_range(0..u16::MAX), rng.gen_range(0..u8::MAX),);
+        let data_object = SwitchCountingSettings::new(rng.gen_range(0..u16::MAX), rng.gen_range(0..u8::MAX), );
 
-        let mut buffer = unsafe { Buffer::new(&mut BUFFER_ARR ) };
+        let mut buffer = unsafe { Buffer::new(&mut BUFFER_ARR) };
 
-        data_object.serialize(&mut buffer);
+        data_object.serialize(&mut buffer).unwrap();
 
         clear_static_buffer_index();
         let parser = ResponseBodyParserImpl::create().unwrap();
@@ -955,12 +946,12 @@ mod tests {
     #[test]
     fn test_response_body_parser_parse_on_relay_disabled_temp() {
         let mut rng = thread_rng();
-        let mut data_object = RelaySingleState::new(rng.gen_range(0..u8::MAX),
+        let data_object = RelaySingleState::new(rng.gen_range(0..u8::MAX),
                                                     rng.gen_range(0..1) > 0);
 
         let mut buffer = unsafe { Buffer::new(&mut BUFFER_ARR ) };
 
-        data_object.serialize(&mut buffer);
+        data_object.serialize(&mut buffer).unwrap();
 
         clear_static_buffer_index();
         let parser = ResponseBodyParserImpl::create().unwrap();
@@ -973,12 +964,12 @@ mod tests {
     #[test]
     fn test_response_body_parser_parse_on_relay_switched_on() {
         let mut rng = thread_rng();
-        let mut data_object = RelaySingleState::new(rng.gen_range(0..u8::MAX),
+        let data_object = RelaySingleState::new(rng.gen_range(0..u8::MAX),
                                                     rng.gen_range(0..1) > 0);
 
         let mut buffer = unsafe { Buffer::new(&mut BUFFER_ARR ) };
 
-        data_object.serialize(&mut buffer);
+        data_object.serialize(&mut buffer).unwrap();
 
         clear_static_buffer_index();
         let parser = ResponseBodyParserImpl::create().unwrap();
@@ -991,12 +982,12 @@ mod tests {
     #[test]
     fn test_response_body_parser_parse_on_relay_monitor_on() {
         let mut rng = thread_rng();
-        let mut data_object = RelaySingleState::new(rng.gen_range(0..u8::MAX),
+        let data_object = RelaySingleState::new(rng.gen_range(0..u8::MAX),
                                                     rng.gen_range(0..1) > 0);
 
         let mut buffer = unsafe { Buffer::new(&mut BUFFER_ARR ) };
 
-        data_object.serialize(&mut buffer);
+        data_object.serialize(&mut buffer).unwrap();
 
         clear_static_buffer_index();
         let parser = ResponseBodyParserImpl::create().unwrap();
@@ -1009,12 +1000,12 @@ mod tests {
     #[test]
     fn test_response_body_parser_parse_on_relay_ctrl_on() {
         let mut rng = thread_rng();
-        let mut data_object = RelaySingleState::new(rng.gen_range(0..u8::MAX),
+        let data_object = RelaySingleState::new(rng.gen_range(0..u8::MAX),
                                                     rng.gen_range(0..1) > 0);
 
         let mut buffer = unsafe { Buffer::new(&mut BUFFER_ARR ) };
 
-        data_object.serialize(&mut buffer);
+        data_object.serialize(&mut buffer).unwrap();
 
         clear_static_buffer_index();
         let parser = ResponseBodyParserImpl::create().unwrap();
@@ -1036,10 +1027,10 @@ mod tests {
             }
             let mut data_object = AllData::new(rng.next_u32(), rng.gen_range(0..count));
             for _ in 0..count {
-                data_object.add(rng.gen_range(0..u8::MAX), rng.gen_range(0..u8::MAX), rng.gen_range(0..u8::MAX), rng.gen_range(0..16));
+                data_object.add(rng.gen_range(0..u8::MAX), rng.gen_range(0..u8::MAX), rng.gen_range(0..u8::MAX), rng.gen_range(0..16)).unwrap();
             }
             let mut buffer = unsafe { Buffer::new(&mut BUFFER_ARR) };
-            AllData::serialize(&data_object, &mut buffer);
+            AllData::serialize(&data_object, &mut buffer).unwrap();
 
             clear_static_buffer_index();
             let parser = ResponseBodyParserImpl::create().unwrap();
@@ -1097,21 +1088,6 @@ mod tests {
         ErrorCode::ERelayNotAllowedPinUsed,
     ];
 
-    const ALL_OPERATION_CODES: [OperationCodes; 12] = [
-        OperationCodes::None,
-        OperationCodes::Set,
-        OperationCodes::Read,
-        OperationCodes::Command,
-        OperationCodes::Response,
-        OperationCodes::Error,
-        OperationCodes::Success,
-        OperationCodes::Signal,
-        OperationCodes::SuccessV2,
-        OperationCodes::ErrorV2,
-        OperationCodes::ResponseV2,
-        OperationCodes::Unknown,
-    ];
-
     const ALL_POSSIBLE_OPERATION_CODES: [OperationCodes; 10] = [
         OperationCodes::Set,
         OperationCodes::Read,
@@ -1130,39 +1106,35 @@ mod tests {
         Signals::StateFixTry, Signals::ControlStateChanged, Signals::RelayStateChanged];
 
     struct MockResponseBodyParser {
-        parse_id_result: Result<Option<u32>, Errors>,
-        parse_id_params: RefCell<Option<Vec<u8>>>,
-        parse_result: Result<DataInstructions, Errors>,
         parse_params: RefCell<Option<Vec<u8>>>,
         request_needs_cache_result: bool,
         request_needs_cache_params: RefCell<Option<DataInstructionCodes>>,
-        slave_controller_version_called: RefCell<bool>,
     }
 
     impl MockResponseBodyParser {
-        fn new_for_body_parse(result: Result<DataInstructions, Errors>) -> Self {
-            Self {
-                parse_id_result: Err(Errors::DataCorrupted),
-                parse_id_params: RefCell::new(None),
-                parse_result: result,
-                parse_params: RefCell::new(None),
-                request_needs_cache_result: false,
-                request_needs_cache_params: RefCell::new(None),
-                slave_controller_version_called: RefCell::new(false),
-            }
-        }
+        // fn new_for_body_parse(result: Result<DataInstructions, Errors>) -> Self {
+        //     Self {
+        //         parse_id_result: Err(Errors::DataCorrupted),
+        //         parse_id_params: RefCell::new(None),
+        //         parse_result: result,
+        //         parse_params: RefCell::new(None),
+        //         request_needs_cache_result: false,
+        //         request_needs_cache_params: RefCell::new(None),
+        //         slave_controller_version_called: RefCell::new(false),
+        //     }
+        // }
 
-        fn new_for_id_parse(parse_id_result: Result<Option<u32>, Errors>) -> Self {
-            Self {
-                parse_id_result,
-                parse_id_params: RefCell::new(None),
-                parse_result: Err(Errors::DataCorrupted),
-                parse_params: RefCell::new(None),
-                request_needs_cache_result: false,
-                request_needs_cache_params: RefCell::new(None),
-                slave_controller_version_called: RefCell::new(false),
-            }
-        }
+        // fn new_for_id_parse(parse_id_result: Result<Option<u32>, Errors>) -> Self {
+        //     Self {
+        //         parse_id_result,
+        //         parse_id_params: RefCell::new(None),
+        //         parse_result: Err(Errors::DataCorrupted),
+        //         parse_params: RefCell::new(None),
+        //         request_needs_cache_result: false,
+        //         request_needs_cache_params: RefCell::new(None),
+        //         slave_controller_version_called: RefCell::new(false),
+        //     }
+        // }
     }
 
     impl ResponseBodyParser for MockResponseBodyParser {
@@ -1171,7 +1143,7 @@ mod tests {
             self.request_needs_cache_result
         }
 
-        fn parse(&self, instruction: DataInstructionCodes, data: &[u8]) -> Result<DataInstructions, Errors> {
+        fn parse(&self, _: DataInstructionCodes, data: &[u8]) -> Result<DataInstructions, Errors> {
             *self.parse_params.borrow_mut() = Some(data.to_vec());
             Err(Errors::DataCorrupted)
         }

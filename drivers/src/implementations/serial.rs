@@ -2,7 +2,7 @@
 
 use stm32f4xx_hal::dma::{ChannelX, DMAError, MemoryToPeripheral, PeripheralToMemory};
 use stm32f4xx_hal::dma::traits::{Channel, DMASet, PeriAddress, Stream};
-use stm32f4xx_hal::serial::{Instance, Rx, RxISR, RxListen, Serial, SerialExt, Tx, TxISR};
+use stm32f4xx_hal::serial::{Instance, Rx, RxISR, RxListen, Serial, Tx, TxISR};
 use stm32f4xx_hal::dma::config::DmaConfig;
 use logic::hal_ext::serial_transfer::{ReadableBuffer, RxTransferProxy, SerialTransfer, TxTransferProxy};
 use logic::utils::dma_read_buffer::Buffer;

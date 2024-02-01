@@ -810,7 +810,7 @@ impl Parser for AllData {
         if data.len() < pairs_count as usize {
             return Err(Errors::NotEnoughDataGot);
         }
-        self.state_data = State::parse_state_data_force(pairs_count, data);
+        self.state_data = State::parse_state_data_force(pairs_count, data)?;
 
         Ok(())
     }
@@ -1398,13 +1398,13 @@ impl State {
         Ok( Self { count, data: BitsU64::new(raw_data) } )
     }
 
-    fn parse_state_data_force(bytes_count: u8, data: &[u8]) -> BitsU64 {
+    fn parse_state_data_force(bytes_count: u8, data: &[u8]) -> Result<BitsU64, Errors> {
         let mut state_data = BitsU64::new(0);
         for i in 0..bytes_count {
             let from = i * 8;
-            state_data.set_byte(from, from  + 7, data[i as usize]);
+            state_data.set_byte(from, from  + 7, data[i as usize])?;
         }
-        state_data
+        Ok(state_data)
     }
 
 }
@@ -1423,7 +1423,7 @@ impl Parser for State {
         if data.len() != 1 + pairs_count as usize {
             return Err(Errors::InvalidDataSize);
         }
-        self.data = Self::parse_state_data_force(pairs_count, &data[1..]);
+        self.data = Self::parse_state_data_force(pairs_count, &data[1..])?;
         Ok(())
     }
 }
@@ -1681,13 +1681,13 @@ impl RelaysSettings {
         Ok(())
     }
 
-    fn set_relay_settings(&mut self, relay_index: u8, relay_settings: RelaySettings) -> Result<(), Errors> {
-        if relay_index >= self.relays_count {
-            return Err(Errors::RelayIndexOutOfRange);
-        }
-        self.relays[relay_index as usize] = relay_settings;
-        Ok(())
-    }
+    // fn set_relay_settings(&mut self, relay_index: u8, relay_settings: RelaySettings) -> Result<(), Errors> {
+    //     if relay_index >= self.relays_count {
+    //         return Err(Errors::RelayIndexOutOfRange);
+    //     }
+    //     self.relays[relay_index as usize] = relay_settings;
+    //     Ok(())
+    // }
 
     fn parse_items<'a>(data: &'a[u8], relays_count: u8, relays_settings_buffer: &mut [RelaySettings]) -> Result<&'a[u8], Errors> {
         if (data.len() as u8) < relays_count * 3 {
