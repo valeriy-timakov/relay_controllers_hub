@@ -61,10 +61,13 @@ impl <SH: SignalsHandler> SignalsPreHandler for SignalControllerImpl<SH> {
                 Operation::Set,
                 DataInstructions::RemoteTimestamp(Conversation::Data(timestamp.seconds())),
                 timestamp);
-            if res.is_err() {
-                self.signal_handler.on_signal_process_error(res.err().unwrap(), false, signal_data);
-            } else {
-                self.signal_handler.on_signal(signal_data, true);
+            match res {
+                Ok(_) => {
+                    self.signal_handler.on_signal(signal_data, true);
+                }
+                Err(err) => {
+                    self.signal_handler.on_signal_process_error(err, false, signal_data);
+                }
             }
         } else {
             self.signal_handler.on_signal(signal_data, false);

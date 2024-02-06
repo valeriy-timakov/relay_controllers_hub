@@ -18,9 +18,9 @@ pub  trait BufferWriter {
     fn clear(&mut self);
 }
 
-impl <const BUFFER_SIZE: usize> Buffer<BUFFER_SIZE> {
+impl <const BUFFER_SIZE2: usize> Buffer<BUFFER_SIZE2> {
 
-    pub fn new(buffer: &'static mut [u8; BUFFER_SIZE]) -> Self {
+    pub fn new(buffer: &'static mut [u8; BUFFER_SIZE2]) -> Self {
         Self { buffer, size: 0 }
     }
 

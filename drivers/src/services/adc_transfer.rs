@@ -1,18 +1,13 @@
 #![deny(unsafe_code)]
 #![deny(warnings)]
 
-use stm32f4xx_hal::{
-    pac::{  DMA2, ADC1 },
-    dma::{
-        config::DmaConfig, traits::StreamISR, PeripheralToMemory, Stream0,
-        Transfer, StreamX
-    },
-    adc::{
-        config::{AdcConfig, Dma, SampleTime, Scan, Sequence},
-        Adc, Temperature,
-    },
-    signature::{VtempCal110, VtempCal30},
-};
+use stm32f4xx_hal::{pac::{DMA2, ADC1}, dma::{
+    config::DmaConfig, PeripheralToMemory, Stream0,
+    Transfer, StreamX
+}, adc::{
+    config::{AdcConfig, Dma, SampleTime, Scan, Sequence},
+    Adc, Temperature,
+}, signature::{VtempCal110, VtempCal30}, ClearFlags};
 
 
 const BUFFER_SIZE: usize = 6;
@@ -33,7 +28,7 @@ impl ADCTransfer {
         adc1: ADC1,
         voltage_pin: CHANNEL
     ) -> Self
-        where CHANNEL: embedded_hal::adc::Channel<ADC1, ID=u8>
+        where CHANNEL: embedded_hal_02::adc::Channel<ADC1, ID=u8>
     {
 
         let adc_config = AdcConfig::default()
@@ -66,17 +61,11 @@ impl ADCTransfer {
         });
     }
 
-    pub fn get_results(&mut self) -> Option<(impl Fn(u16)->u16, &'static mut AdcBuffer)> {
-        if Stream0::<DMA2>::get_transfer_complete_flag() {
-            self.adc_transfer.clear_transfer_complete_interrupt();
-            // When the DMA completes it will return the buffer we gave it last time - we now store that as `buffer`
-            // We still have our other buffer waiting in `local.buffer`, so `take` that and give it to the `transfer`
-            let back_buffer = self.back_buffer.take().unwrap();
-            let (buffer, _) = self.adc_transfer.next_transfer(back_buffer).unwrap();
-            Some((self.adc_transfer.peripheral().make_sample_to_millivolts(), buffer))
-        } else {
-            None
-        }
+    pub fn get_results(&mut self) -> (impl Fn(u16)->u16, &'static mut AdcBuffer) {
+        let back_buffer = self.back_buffer.take().unwrap();
+        let (buffer, _) = self.adc_transfer.next_transfer(back_buffer).unwrap();
+        self.adc_transfer.clear_all_flags();
+        (self.adc_transfer.peripheral().make_sample_to_millivolts(), buffer)
     }
 
     pub fn return_buffer(&mut self, buffer: &'static mut AdcBuffer) {

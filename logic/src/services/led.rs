@@ -1,7 +1,7 @@
 #![deny(unsafe_code)]
 #![deny(warnings)]
 
-use embedded_hal::digital::v2::OutputPin;
+use embedded_hal_02::digital::v2::OutputPin;
 
 pub struct Led<Pin: OutputPin> {
     pin: Pin,
@@ -24,7 +24,7 @@ impl<Pin: OutputPin> Led<Pin> {
         }
     }
 
-    pub fn init(&mut self, on: bool) -> Result<(), <Pin as embedded_hal::digital::v2::OutputPin>::Error> {
+    pub fn init(&mut self, on: bool) -> Result<(), <Pin as OutputPin>::Error> {
         self.is_on = on;
         self.cycles_count = 0;
         if self.is_on ^ self.on_when_low {
@@ -34,7 +34,7 @@ impl<Pin: OutputPin> Led<Pin> {
         }
     }
 
-    pub fn update(&mut self) -> Result<(), <Pin as embedded_hal::digital::v2::OutputPin>::Error> {
+    pub fn update(&mut self) -> Result<(), <Pin as OutputPin>::Error> {
         self.cycles_count += 1;
         if self.is_on && self.cycles_count >= self.on_cycles_count {
             self.init(false)

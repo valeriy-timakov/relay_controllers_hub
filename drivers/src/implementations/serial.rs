@@ -1,21 +1,24 @@
 #![allow(unsafe_code)]
 
 use stm32f4xx_hal::dma::{ChannelX, DMAError, MemoryToPeripheral, PeripheralToMemory};
-use stm32f4xx_hal::dma::traits::{Channel, DMASet, PeriAddress, Stream};
+use stm32f4xx_hal::dma::traits::{Channel, DMASet, PeriAddress, Stream, StreamISR};
 use stm32f4xx_hal::serial::{Instance, Rx, RxISR, RxListen, Serial, Tx, TxISR};
 use stm32f4xx_hal::dma::config::DmaConfig;
-use logic::hal_ext::serial_transfer::{ReadableBuffer, RxTransferProxy, SerialTransfer, TxTransferProxy};
+use logic::hal_ext::serial_transfer::{ReadableBuffer, RxTransferProxy, SerialTransfer, TransferProxy, TxTransferProxy};
 use logic::utils::dma_read_buffer::Buffer;
 use core::marker::PhantomData;
 use core::ops::{Deref, DerefMut};
 use embedded_dma::WriteBuffer;
+use stm32f4xx_hal::ClearFlags;
 use logic::errors;
 
-const BUFFER_SIZE: usize = 256;
-
-pub type TxBuffer = Buffer<BUFFER_SIZE>;
-
 pub struct RxBuffer (&'static mut [u8]);
+
+impl RxBuffer {
+    pub fn len(&self) -> usize {
+        self.0.len()
+    }
+}
 
 impl ReadableBuffer for RxBuffer {
     fn slice_to(&self, to: usize) -> &[u8] {
@@ -47,37 +50,82 @@ impl DerefMut for RxBuffer {
 
 pub struct Transfer<STREAM: Stream, const CHANNEL: u8, PERIPHERAL: PeriAddress, DIRECTION, BUF> {
     inner: stm32f4xx_hal::dma::Transfer<STREAM, CHANNEL, PERIPHERAL, DIRECTION, BUF>,
+    capacity: usize,
     _stream: PhantomData<STREAM>,
     _peripheral: PhantomData<PERIPHERAL>,
     _direction: PhantomData<DIRECTION>,
     _buf: PhantomData<BUF>,
 }
 
-impl<U, STREAM, const CHANNEL: u8> TxTransferProxy<TxBuffer> for
-Transfer<STREAM, CHANNEL, Tx<U>, MemoryToPeripheral, TxBuffer>
+impl<STREAM, PERIPHERAL, DIRECTION, BUF, const CHANNEL: u8> TransferProxy<BUF> for
+Transfer<STREAM, CHANNEL, PERIPHERAL, DIRECTION, BUF>
+    where
+        DIRECTION: stm32f4xx_hal::dma::traits::Direction,
+        STREAM: Stream,
+        ChannelX<CHANNEL>: Channel,
+        PERIPHERAL: PeriAddress +  DMASet<STREAM, CHANNEL, DIRECTION>,
+{
+    #[inline(always)]
+    fn is_fifo_error(&self) -> bool {
+        self.inner.is_fifo_error()
+    }
+
+    #[inline(always)]
+    fn is_transfer_complete(&self) -> bool {
+        self.inner.is_transfer_complete()
+    }
+    #[inline(always)]
+    fn is_direct_mode_error(&self) -> bool {
+        self.inner.is_direct_mode_error()
+    }
+    #[inline(always)]
+    fn is_half_transfer(&self) -> bool {
+        self.inner.is_half_transfer()
+    }
+    #[inline(always)]
+    fn is_transfer_error(&self) -> bool {
+        self.inner.is_transfer_error()
+    }
+
+    #[inline(always)]
+    fn clear_dma_interrupts(&mut self) {
+        self.inner.clear_all_flags();
+    }
+    #[inline(always)]
+    fn clear_direct_mode_error(&mut self) {
+        self.inner.clear_direct_mode_error();
+    }
+    #[inline(always)]
+    fn clear_fifo_error(&mut self) {
+        self.inner.clear_fifo_error();
+    }
+    #[inline(always)]
+    fn clear_half_transfer(&mut self) {
+        self.inner.clear_half_transfer();
+    }
+    #[inline(always)]
+    fn clear_transfer_complete(&mut self) {
+        self.inner.clear_transfer_complete();
+    }
+    #[inline(always)]
+    fn clear_transfer_error(&mut self) {
+        self.inner.clear_transfer_error();
+    }
+
+}
+
+
+impl<U, STREAM, const BUFFER_SIZE_2: usize, const CHANNEL: u8> TxTransferProxy<Buffer<BUFFER_SIZE_2>> for
+Transfer<STREAM, CHANNEL, Tx<U>, MemoryToPeripheral, Buffer<BUFFER_SIZE_2>>
     where
         U: Instance,
         Tx<U, u8>: PeriAddress<MemSize=u8> + DMASet<STREAM, CHANNEL, MemoryToPeripheral> + TxISR,
         STREAM: Stream,
         ChannelX<CHANNEL>: Channel,
 {
-    #[inline(always)]
-    fn get_fifo_error_flag(&self) -> bool {
-        STREAM::get_fifo_error_flag()
-    }
 
     #[inline(always)]
-    fn get_transfer_complete_flag(&self) -> bool {
-        STREAM::get_transfer_complete_flag()
-    }
-
-    #[inline(always)]
-    fn clear_dma_interrupts(&mut self) {
-        self.inner.clear_interrupts();
-    }
-
-    #[inline(always)]
-    fn next_transfer(&mut self, buffer: TxBuffer) -> Result<TxBuffer, errors::DMAError<TxBuffer>> {
+    fn next_transfer(&mut self, buffer: Buffer<BUFFER_SIZE_2>) -> Result<Buffer<BUFFER_SIZE_2>, errors::DMAError<Buffer<BUFFER_SIZE_2>>> {
         self.inner.next_transfer(buffer)
             .map(|(buffer, _)| { buffer } )
             .map_err(convert_dma_error )
@@ -96,30 +144,15 @@ Transfer<STREAM, CHANNEL, Rx<U>, PeripheralToMemory, RxBuffer>
 {
 
     #[inline(always)]
-    fn get_fifo_error_flag(&self) -> bool {
-        STREAM::get_fifo_error_flag()
-    }
-
-    #[inline(always)]
-    fn get_transfer_complete_flag(&self) -> bool {
-        STREAM::get_transfer_complete_flag()
-    }
-
-    #[inline(always)]
-    fn clear_dma_interrupts(&mut self) {
-        self.inner.clear_interrupts();
-    }
-
-    #[inline(always)]
-    fn get_read_bytes_count(&self) -> usize {
-        BUFFER_SIZE - STREAM::get_number_of_transfers() as usize
-    }
-
-    #[inline(always)]
     fn next_transfer(&mut self, new_buf: RxBuffer) -> Result<RxBuffer, errors::DMAError<RxBuffer>> {
         self.inner.next_transfer(new_buf)
             .map(|(buffer, _)| { buffer } )
             .map_err(convert_dma_error )
+    }
+
+    #[inline(always)]
+    fn get_read_bytes_count(&self) -> usize {
+        self.capacity - self.inner.number_of_transfers() as usize
     }
 
     #[inline(always)]
@@ -148,22 +181,49 @@ fn convert_dma_error<T>(e: DMAError<T>) -> errors::DMAError<T> {
 }
 
 
-pub struct SerialTransferBuilderSTMF401x<U, TxStream, const TX_CHANNEL: u8, RxStream, const RX_CHANNEL: u8>
-where
-    U: Instance,
-    Tx<U, u8>: PeriAddress<MemSize=u8> + DMASet<TxStream, TX_CHANNEL, MemoryToPeripheral> + TxISR,
-    TxStream: Stream,
-    ChannelX<TX_CHANNEL>: Channel,
-    Rx<U>: PeriAddress<MemSize=u8> + DMASet<RxStream, RX_CHANNEL, PeripheralToMemory> + RxISR + RxListen,
-    RxStream: Stream,
-    ChannelX<RX_CHANNEL>: Channel
+pub struct Buffers<const SIZE: usize> {
+    tx_buffer_1: &'static mut [u8; SIZE],
+    tx_buffer_2: &'static mut [u8; SIZE],
+    rx_buffer_1: &'static mut [u8; SIZE],
+    rx_buffer_2: &'static mut [u8; SIZE],
+}
+
+impl <const SIZE: usize> Buffers<SIZE> {
+
+    pub fn new (
+        tx_buffer_1: &'static mut [u8; SIZE],
+        tx_buffer_2: &'static mut [u8; SIZE],
+        rx_buffer_1: &'static mut [u8; SIZE],
+        rx_buffer_2: &'static mut [u8; SIZE]
+    ) -> Self {
+        Self {
+            tx_buffer_1,
+            tx_buffer_2,
+            rx_buffer_1,
+            rx_buffer_2
+        }
+    }
+
+}
+
+pub struct SerialTransferBuilderSTMF401x<U, TxStream, const TX_CHANNEL: u8, RxStream, const BUFFER_SIZE_2: usize, const RX_CHANNEL: u8>
+    where
+        U: Instance,
+        Tx<U, u8>: PeriAddress<MemSize=u8> + DMASet<TxStream, TX_CHANNEL, MemoryToPeripheral> + TxISR,
+        TxStream: Stream,
+        ChannelX<TX_CHANNEL>: Channel,
+        Rx<U>: PeriAddress<MemSize=u8> + DMASet<RxStream, RX_CHANNEL, PeripheralToMemory> + RxISR + RxListen,
+        RxStream: Stream,
+        ChannelX<RX_CHANNEL>: Channel
 {
     _peripheral: PhantomData<U>,
     _tx_stream: PhantomData<TxStream>,
-    _rx_stream: PhantomData<RxStream>
+    _rx_stream: PhantomData<RxStream>,
+    _tx_buff: PhantomData<Buffer<BUFFER_SIZE_2>>
 }
 
-impl<U, TxStream, const TX_CHANNEL: u8, RxStream, const RX_CHANNEL: u8> SerialTransferBuilderSTMF401x<U, TxStream, TX_CHANNEL, RxStream, RX_CHANNEL>
+impl<U, TxStream, const BUFFER_SIZE_2: usize, const TX_CHANNEL: u8, RxStream, const RX_CHANNEL: u8>
+        SerialTransferBuilderSTMF401x<U, TxStream, TX_CHANNEL, RxStream, BUFFER_SIZE_2, RX_CHANNEL>
     where
         U: Instance,
         Tx<U, u8>: PeriAddress<MemSize=u8> + DMASet<TxStream, TX_CHANNEL, MemoryToPeripheral> + TxISR,
@@ -178,35 +238,32 @@ impl<U, TxStream, const TX_CHANNEL: u8, RxStream, const RX_CHANNEL: u8> SerialTr
         serial: Serial<U>,
         dma_tx_stream: TxStream,
         dma_rx_stream: RxStream,
+        buffers: Buffers<BUFFER_SIZE_2>
     ) -> SerialTransfer<
-        Transfer<TxStream, TX_CHANNEL, Tx<U, u8>, MemoryToPeripheral, TxBuffer>,
+        Transfer<TxStream, TX_CHANNEL, Tx<U, u8>, MemoryToPeripheral, Buffer<BUFFER_SIZE_2>>,
         Transfer<RxStream, RX_CHANNEL, Rx<U, u8>, PeripheralToMemory, RxBuffer>,
-        TxBuffer, RxBuffer
+        Buffer<BUFFER_SIZE_2>, RxBuffer
     > {
 
         let (tx, rx) = serial.split();
-        let tx_buffer1 = Buffer::new(cortex_m::singleton!(: [u8; BUFFER_SIZE] = [0; BUFFER_SIZE]).unwrap());
-        let tx_buffer2 = Buffer::new(cortex_m::singleton!(: [u8; BUFFER_SIZE] = [0; BUFFER_SIZE]).unwrap());
-        let rx_buffer1 = RxBuffer(cortex_m::singleton!(: [u8; BUFFER_SIZE] = [0; BUFFER_SIZE]).unwrap());
-        let rx_buffer2 = RxBuffer(cortex_m::singleton!(: [u8; BUFFER_SIZE] = [0; BUFFER_SIZE]).unwrap());
 
         SerialTransfer::new(
-            Self::create_tx(tx, dma_tx_stream, tx_buffer1), tx_buffer2,
-            Self::create_rx(rx, dma_rx_stream, rx_buffer1), rx_buffer2
+            Self::create_tx(tx, dma_tx_stream, Buffer::new(buffers.tx_buffer_1)), Buffer::new(buffers.tx_buffer_2),
+            Self::create_rx(rx, dma_rx_stream, RxBuffer(buffers.rx_buffer_1)), RxBuffer(buffers.rx_buffer_2)
         )
     }
 
     fn create_tx(
         tx: Tx<U, u8>,
         dma_stream: TxStream,
-        tx_buffer1: TxBuffer,
-    ) -> Transfer<TxStream, TX_CHANNEL, Tx<U, u8>, MemoryToPeripheral, TxBuffer> {
+        tx_buffer: Buffer<BUFFER_SIZE_2>,
+    ) -> Transfer<TxStream, TX_CHANNEL, Tx<U, u8>, MemoryToPeripheral, Buffer<BUFFER_SIZE_2>> {
 
-        let tx_transfer: stm32f4xx_hal::dma::Transfer<TxStream, TX_CHANNEL, Tx<U, u8>, MemoryToPeripheral, TxBuffer> =
+        let tx_transfer: stm32f4xx_hal::dma::Transfer<TxStream, TX_CHANNEL, Tx<U, u8>, MemoryToPeripheral, Buffer<BUFFER_SIZE_2>> =
             stm32f4xx_hal::dma::Transfer::init_memory_to_peripheral(
                 dma_stream,
                 tx,
-                tx_buffer1,
+                tx_buffer,
                 None,
                 DmaConfig::default()
                     .memory_increment(true)
@@ -217,6 +274,7 @@ impl<U, TxStream, const TX_CHANNEL: u8, RxStream, const RX_CHANNEL: u8> SerialTr
 
         Transfer {
             inner: tx_transfer,
+            capacity: BUFFER_SIZE_2,
             _stream: PhantomData,
             _peripheral: PhantomData,
             _direction: PhantomData,
@@ -250,6 +308,7 @@ impl<U, TxStream, const TX_CHANNEL: u8, RxStream, const RX_CHANNEL: u8> SerialTr
 
         Transfer {
             inner: rx_transfer,
+            capacity: BUFFER_SIZE_2,
             _stream: PhantomData,
             _peripheral: PhantomData,
             _direction: PhantomData,

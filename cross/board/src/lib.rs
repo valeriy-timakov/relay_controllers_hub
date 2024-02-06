@@ -30,14 +30,20 @@ use logic::services::led::Led;
 use logic::services::slave_controller_link::{init_slave_controllers, SlaveControllerLink};
 use logic::hal_ext::serial_transfer::{Receiver, RxTransfer, Sender, SerialTransfer, TxTransfer};
 use logic::utils::write_to;
-use drivers::implementations::serial::{RxBuffer, SerialTransferBuilderSTMF401x, Transfer, TxBuffer};
+use drivers::implementations::serial::{Buffers, RxBuffer, SerialTransferBuilderSTMF401x, Transfer};
 use logic::services::slave_controller_link::receiver_from_slave::ErrorHandler;
 use logic::services::slave_controller_link::requests_controller::{ResponseHandler, SentRequest};
 use logic::services::slave_controller_link::signals_controller::SignalsHandler;
-use logic::utils::dma_read_buffer::BufferWriter;
+use logic::utils::dma_read_buffer::{Buffer, BufferWriter};
 use stm32f4xx_hal::serial::{Rx, Tx};
+use stm32f4xx_hal::dma::traits::StreamISR;
 
 
+
+
+const BUFFER_SIZE: usize = 256;
+
+type TxBuffer = Buffer<BUFFER_SIZE>;
 
 type Rx1Transfer_ = Transfer<Stream2<DMA2>, 4, Rx<USART1>, PeripheralToMemory, RxBuffer>;
 type Tx1Transfer_ = Transfer<Stream7<DMA2>, 4, Tx<USART1>, MemoryToPeripheral, TxBuffer>;
@@ -129,10 +135,6 @@ impl Board {
             .pclk2(42.MHz())
             .freeze();
 
-        let response_error_handler_1 = |err: Errors| {
-            hprintln!("response_error_handler: {:?}", err);
-        };
-
         let rtc_not_initialized = dp.RTC.isr.read().inits().is_not_initalized();
         let mut rtc = DateTimeSource::new( RtcWrapper::new( Rtc::new(dp.RTC, &mut dp.PWR) ) );
 
@@ -153,7 +155,7 @@ impl Board {
         let serial1 = dp.USART1.serial(
             (gpioa.pa9.into_alternate(), gpioa.pa10),
             Config::default()
-                .baudrate(115_200.bps())
+                .baudrate(9600.bps())
                 .dma(config::DmaConfig::TxRx),
             &clocks,
         ).unwrap();
@@ -161,7 +163,7 @@ impl Board {
         let serial2 = dp.USART2.serial(
             (gpioa.pa2.into_alternate(), gpioa.pa3),
             Config::default()
-                .baudrate(18_200.bps())
+                .baudrate(9600.bps())
                 .dma(config::DmaConfig::TxRx),
             &clocks,
         ).unwrap();
@@ -169,14 +171,36 @@ impl Board {
         let serial6 = dp.USART6.serial(
             (gpioa.pa11.into_alternate(), gpioa.pa12),
             Config::default()
-                .baudrate(18_200.bps())
+                .baudrate(9600.bps())
                 .dma(config::DmaConfig::TxRx),
             &clocks,
         ).unwrap();
 
-        let serial_transfer_1 = SerialTransferBuilderSTMF401x::create_serial_transfer(serial1, dma2.7, dma2.2);
-        let serial_transfer_2 = SerialTransferBuilderSTMF401x::create_serial_transfer(serial2, dma1.6, dma1.5);
-        let serial_transfer_6 = SerialTransferBuilderSTMF401x::create_serial_transfer(serial6, dma2.6, dma2.1);
+        let buffers1 = Buffers::new(
+            cortex_m::singleton!(: [u8; BUFFER_SIZE] = [0; BUFFER_SIZE]).unwrap(),
+            cortex_m::singleton!(: [u8; BUFFER_SIZE] = [0; BUFFER_SIZE]).unwrap(),
+            cortex_m::singleton!(: [u8; BUFFER_SIZE] = [0; BUFFER_SIZE]).unwrap(),
+            cortex_m::singleton!(: [u8; BUFFER_SIZE] = [0; BUFFER_SIZE]).unwrap()
+        );
+
+        let buffers2 = Buffers::new(
+            cortex_m::singleton!(: [u8; BUFFER_SIZE] = [0; BUFFER_SIZE]).unwrap(),
+            cortex_m::singleton!(: [u8; BUFFER_SIZE] = [0; BUFFER_SIZE]).unwrap(),
+            cortex_m::singleton!(: [u8; BUFFER_SIZE] = [0; BUFFER_SIZE]).unwrap(),
+            cortex_m::singleton!(: [u8; BUFFER_SIZE] = [0; BUFFER_SIZE]).unwrap()
+        );
+
+        let buffers6 = Buffers::new(
+            cortex_m::singleton!(: [u8; BUFFER_SIZE] = [0; BUFFER_SIZE]).unwrap(),
+            cortex_m::singleton!(: [u8; BUFFER_SIZE] = [0; BUFFER_SIZE]).unwrap(),
+            cortex_m::singleton!(: [u8; BUFFER_SIZE] = [0; BUFFER_SIZE]).unwrap(),
+            cortex_m::singleton!(: [u8; BUFFER_SIZE] = [0; BUFFER_SIZE]).unwrap()
+        );
+
+
+        let serial_transfer_1 = SerialTransferBuilderSTMF401x::create_serial_transfer(serial1, dma2.7, dma2.2, buffers1);
+        let serial_transfer_2 = SerialTransferBuilderSTMF401x::create_serial_transfer(serial2, dma1.6, dma1.5, buffers2);
+        let serial_transfer_6 = SerialTransferBuilderSTMF401x::create_serial_transfer(serial6, dma2.6, dma2.1, buffers6);
 
         let signal_handler = SignalHandlerImp();
 
@@ -252,7 +276,7 @@ impl InWork {
 
 
     pub fn on_tim2(&mut self) {
-        self.counter2.clear_interrupt(timer::Event::Update);
+        self.counter2.clear_all_flags();
         self.counter2.now().ticks();
         let time: PrimitiveDateTime = self.rtc.get_datetime();
         let mut buf = [0u8; 64];
@@ -263,14 +287,17 @@ impl InWork {
                          time.second())
         ).unwrap();
         let tx: &mut Tx1Transfer = self.serial_transfer_1.tx();
-        tx.start_transfer(|buf| {
+        match tx.start_transfer(|buf| {
             buf.add_str(_s)
-        }).unwrap();
+        }) {
+            Ok(_) => { hprintln!("tx interrupt handled!"); }
+            Err(err) => { hprintln!("Error sending on tim 2! {}", err); }
+        };
 
     }
 
     pub fn on_tim3(&mut self) {
-        self.counter.clear_interrupt(timer::Event::Update);
+        self.counter.clear_all_flags();
         self.led.update();
     }
 
@@ -287,7 +314,7 @@ impl InWork {
             })
         }) {
             Ok(_) => { hprintln!("rx interrupt handled!"); }
-            Err(_) => { hprintln!("Wrong UART1 on idle interrupt: no buffer!"); }
+            Err(err) => { hprintln!("Wrong UART1 on idle interrupt: {}!", err); }
         };
 
     }
@@ -306,7 +333,7 @@ impl InWork {
             })
         }) {
             Ok(_) => { hprintln!("rx interrupt handled!"); }
-            Err(_) => { hprintln!("Wrong UART1 on idle interrupt: no buffer!"); }
+            Err(err) => { hprintln!("Wrong UART2 on idle interrupt: {}!", err); }
         };
     }
 
@@ -338,16 +365,12 @@ impl InWork {
 
     }
 
-    pub fn on_dma(&mut self) {
-        match self.adc_transfer.get_results() {
-            Some(_data) => {
-                let buff = _data.1;
-                let (temperature, voltage) = ADCTransfer::get_last_data(_data.0, buff);
-                self.adc_transfer.return_buffer(buff);
-                hprintln!("temperature: {}, voltage: {}", temperature, voltage);
-            }
-            None => {}
-        }
+    pub fn on_dma2_stream0(&mut self) {
+        let data  = self.adc_transfer.get_results();
+        let buff = data.1;
+        let (temperature, voltage) = ADCTransfer::get_last_data(data.0, buff);
+        self.adc_transfer.return_buffer(buff);
+        hprintln!("temperature: {}, voltage: {}", temperature, voltage);
     }
 }
 

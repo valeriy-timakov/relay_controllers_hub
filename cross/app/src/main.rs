@@ -149,10 +149,10 @@ mod app {
         });
     }
 
-    #[task(binds = DMA2_STREAM0, priority=1, shared = [in_work], local = [])]
-    fn dma(mut ctx: dma::Context) {
+    #[task(binds = DMA2_STREAM0, priority=1, shared = [in_work])]
+    fn dma2_stream0(mut ctx: dma2_stream0::Context) {
         ctx.shared.in_work.lock(|in_work: &mut InWork| {
-            in_work.on_dma();
+            in_work.on_dma2_stream0();
         });
     }
 

@@ -1,5 +1,6 @@
 #![allow(unsafe_code)]
 
+use cortex_m_semihosting::hprintln;
 use embedded_dma::{ReadBuffer, WriteBuffer};
 use crate::errors::{DMAError, Errors};
 use crate::utils::dma_read_buffer::BufferWriter;
@@ -14,12 +15,9 @@ pub trait ReadableBuffer {
     fn slice_to(&self, to: usize) -> &[u8];
 }
 
-pub trait RxTransferProxy<BUF>
-where BUF: WriteBuffer,
+pub trait RxTransferProxy<BUF> : TransferProxy<BUF>
+    where BUF: WriteBuffer,
 {
-    fn get_fifo_error_flag(&self) -> bool;
-    fn get_transfer_complete_flag(&self) -> bool;
-    fn clear_dma_interrupts(&mut self);
     fn get_read_bytes_count(&self) -> usize;
     fn next_transfer(&mut self, new_buf: BUF) -> Result<BUF, DMAError<BUF>>;
     fn is_idle(&self) -> bool;
@@ -27,14 +25,26 @@ where BUF: WriteBuffer,
     fn clear_idle_interrupt(&mut self);
 }
 
-pub trait TxTransferProxy<BUF>
-where
-    BUF: ReadBuffer,
+pub trait TxTransferProxy<BUF> : TransferProxy<BUF>
+    where
+        BUF: ReadBuffer,
 {
-    fn get_fifo_error_flag(&self) -> bool;
-    fn get_transfer_complete_flag(&self) -> bool;
-    fn clear_dma_interrupts(&mut self);
     fn next_transfer(&mut self, new_buf: BUF) -> Result<BUF, DMAError<BUF>>;
+}
+
+pub trait TransferProxy<BUF> {
+    fn is_fifo_error(&self) -> bool;
+    fn is_transfer_complete(&self) -> bool;
+    fn is_direct_mode_error(&self) -> bool;
+    fn is_half_transfer(&self) -> bool;
+    fn is_transfer_error(&self) -> bool;
+
+    fn clear_dma_interrupts(&mut self);
+    fn clear_direct_mode_error(&mut self);
+    fn clear_fifo_error(&mut self);
+    fn clear_half_transfer(&mut self);
+    fn clear_transfer_complete(&mut self);
+    fn clear_transfer_error(&mut self);
 }
 
 pub struct SerialTransfer<T, R, TxBuff, RxBuff>
@@ -95,7 +105,7 @@ where
 {
     rx_transfer: R,
     back_buffer: Option<BUF>,
-    fifo_error: bool,
+    transfer_error: bool,
     buffer_overflow: bool,
 }
 
@@ -108,22 +118,40 @@ impl<R, BUF> RxTransfer<R, BUF>
         Self {
             rx_transfer,
             back_buffer: Some(back_buffer),
-            fifo_error: false,
+            transfer_error: false,
             buffer_overflow: false,
         }
     }
 
     pub fn on_dma_interrupts(&mut self) {
-        self.rx_transfer.clear_dma_interrupts();
-        if self.rx_transfer.get_fifo_error_flag() {
-            self.fifo_error = true;
+        if  self.rx_transfer.is_fifo_error() {
+            hprintln!("rx: is_fifo_error");
+            self.transfer_error = true;
+            self.rx_transfer.clear_fifo_error();
         }
-        if self.rx_transfer.get_transfer_complete_flag() {
+        if  self.rx_transfer.is_transfer_complete() {
+            hprintln!("rx: is_transfer_complete");
             self.buffer_overflow = true;
+            self.rx_transfer.clear_transfer_complete();
         }
+        if self.rx_transfer.is_transfer_error() {
+            hprintln!("rx: is_transfer_error");
+            self.transfer_error = true;
+            self.rx_transfer.clear_transfer_error();
+        }
+        if self.rx_transfer.is_half_transfer() {
+            hprintln!("rx: is_half_transfer");
+            self.rx_transfer.clear_half_transfer();
+        }
+        if self.rx_transfer.is_direct_mode_error() {
+            hprintln!("rx: is_direct_mode_error");
+            self.transfer_error = true;
+            self.rx_transfer.clear_direct_mode_error();
+        }
+
     }
     pub fn fifo_error(&self) -> bool {
-        self.fifo_error
+        self.transfer_error
     }
     pub fn buffer_overflow(&self) -> bool {
         self.buffer_overflow
@@ -131,7 +159,7 @@ impl<R, BUF> RxTransfer<R, BUF>
 
     fn return_buffer(&mut self, buffer: BUF) {
         self.back_buffer = Some(buffer);
-        self.fifo_error = false;
+        self.transfer_error = false;
         self.buffer_overflow = false;
     }
 }
@@ -180,7 +208,7 @@ where
 {
     tx_transfer: T,
     back_buffer: Option<BUF>,
-    fifo_error: bool,
+    transfer_error: bool,
     last_transfer_ended: bool,
 }
 
@@ -194,23 +222,40 @@ impl<T, BUF> TxTransfer<T, BUF>
         Self {
             tx_transfer,
             back_buffer: Some(back_buffer),
-            fifo_error: false,
+            transfer_error: false,
             last_transfer_ended: true,
         }
     }
 
     pub fn on_dma_interrupts(&mut self) {
-        self.tx_transfer.clear_dma_interrupts();
-        if  self.tx_transfer.get_fifo_error_flag() {
-            self.fifo_error = true;
+        if  self.tx_transfer.is_fifo_error() {
+            hprintln!("tx: is_fifo_error");
+            self.transfer_error = true;
+            self.tx_transfer.clear_fifo_error();
         }
-        if  self.tx_transfer.get_transfer_complete_flag() {
+        if  self.tx_transfer.is_transfer_complete() {
+            hprintln!("tx: is_transfer_complete");
             self.last_transfer_ended = true;
+            self.tx_transfer.clear_transfer_complete();
+        }
+        if self.tx_transfer.is_transfer_error() {
+            hprintln!("tx: is_transfer_error");
+            self.transfer_error = true;
+            self.tx_transfer.clear_transfer_error();
+        }
+        if self.tx_transfer.is_half_transfer() {
+            hprintln!("tx: is_half_transfer");
+            self.tx_transfer.clear_half_transfer();
+        }
+        if self.tx_transfer.is_direct_mode_error() {
+            hprintln!("tx: is_direct_mode_error");
+            self.transfer_error = true;
+            self.tx_transfer.clear_direct_mode_error();
         }
     }
 
-    pub fn fifo_error(&self) -> bool {
-        self.fifo_error
+    pub fn transfer_error(&self) -> bool {
+        self.transfer_error
     }
     pub fn last_transfer_ended(&self) -> bool {
         self.last_transfer_ended
@@ -228,7 +273,7 @@ impl<T, BUF> Sender<BUF> for TxTransfer<T, BUF>
     is called from one thread only at the same time.
      */
     fn start_transfer<F: FnOnce(&mut BUF)->Result<(), Errors>>(&mut self, writter: F) -> Result<(), Errors> {
-        if !self.last_transfer_ended && !self.fifo_error {
+        if !self.last_transfer_ended && !self.transfer_error {
             return Err(Errors::TransferInProgress);
         }
         let mut new_buffer = match self.back_buffer.take() {
@@ -238,7 +283,7 @@ impl<T, BUF> Sender<BUF> for TxTransfer<T, BUF>
         new_buffer.clear();
         writter(&mut new_buffer)?;
 
-        self.fifo_error = false;
+        self.transfer_error = false;
         self.last_transfer_ended = false;
 
 
@@ -340,34 +385,11 @@ mod tests {
         DMAError::NotReady(value)
     }
 
+
     impl RxTransferProxy<MockRxBuffer> for MockRxTransfer {
-
-        fn get_fifo_error_flag(&self) -> bool {
-            self.fifo_error
-        }
-
-        fn get_transfer_complete_flag(&self) -> bool {
-            self.transfer_complete
-        }
 
         fn get_read_bytes_count(&self) -> usize {
             self.read_bytes_count
-        }
-
-        fn is_idle(&self) -> bool {
-            self.idle
-        }
-
-        fn is_rx_not_empty(&self) -> bool {
-            self.rx_not_empty
-        }
-
-        fn clear_dma_interrupts(&mut self) {
-            self.clear_dma_interrupts_calls += 1;
-        }
-
-        fn clear_idle_interrupt(&mut self) {
-            self.clear_idle_interrupt_calls += 1;
         }
 
         fn next_transfer(&mut self, new_buf: MockRxBuffer) -> Result<MockRxBuffer, DMAError<MockRxBuffer>> {
@@ -380,17 +402,115 @@ mod tests {
                 Ok(last_buf)
             }
         }
+
+        fn is_idle(&self) -> bool {
+            self.idle
+        }
+
+        fn is_rx_not_empty(&self) -> bool {
+            self.rx_not_empty
+        }
+
+        fn clear_idle_interrupt(&mut self) {
+            self.clear_idle_interrupt_calls += 1;
+        }
+    }
+
+    impl TransferProxy<MockRxBuffer> for MockRxTransfer {
+
+        fn is_fifo_error(&self) -> bool {
+            self.fifo_error
+        }
+
+        fn is_transfer_complete(&self) -> bool {
+            self.transfer_complete
+        }
+
+        fn is_direct_mode_error(&self) -> bool {
+            todo!()
+        }
+
+        fn is_half_transfer(&self) -> bool {
+            todo!()
+        }
+
+        fn is_transfer_error(&self) -> bool {
+            todo!()
+        }
+
+        fn clear_dma_interrupts(&mut self) {
+            self.clear_dma_interrupts_calls += 1;
+        }
+
+        fn clear_direct_mode_error(&mut self) {
+            todo!()
+        }
+
+        fn clear_fifo_error(&mut self) {
+            todo!()
+        }
+
+        fn clear_half_transfer(&mut self) {
+            todo!()
+        }
+
+        fn clear_transfer_complete(&mut self) {
+            todo!()
+        }
+
+        fn clear_transfer_error(&mut self) {
+            todo!()
+        }
+    }
+
+    impl TransferProxy<MockRxBuffer> for Rc<RefCell<MockRxTransfer>> {
+
+        fn is_fifo_error(&self) -> bool {
+            self.borrow().is_fifo_error()
+        }
+
+        fn is_transfer_complete(&self) -> bool {
+            self.borrow().is_transfer_complete()
+        }
+
+        fn is_direct_mode_error(&self) -> bool {
+            todo!()
+        }
+
+        fn is_half_transfer(&self) -> bool {
+            todo!()
+        }
+
+        fn is_transfer_error(&self) -> bool {
+            todo!()
+        }
+
+        fn clear_dma_interrupts(&mut self) {
+            self.borrow_mut().clear_dma_interrupts()
+        }
+
+        fn clear_direct_mode_error(&mut self) {
+            todo!()
+        }
+
+        fn clear_fifo_error(&mut self) {
+            todo!()
+        }
+
+        fn clear_half_transfer(&mut self) {
+            todo!()
+        }
+
+        fn clear_transfer_complete(&mut self) {
+            todo!()
+        }
+
+        fn clear_transfer_error(&mut self) {
+            todo!()
+        }
     }
 
     impl RxTransferProxy<MockRxBuffer> for Rc<RefCell<MockRxTransfer>> {
-
-            fn get_fifo_error_flag(&self) -> bool {
-                self.borrow().get_fifo_error_flag()
-            }
-
-            fn get_transfer_complete_flag(&self) -> bool {
-                self.borrow().get_transfer_complete_flag()
-            }
 
             fn get_read_bytes_count(&self) -> usize {
                 self.borrow().get_read_bytes_count()
@@ -402,10 +522,6 @@ mod tests {
 
             fn is_rx_not_empty(&self) -> bool {
                 self.borrow().is_rx_not_empty()
-            }
-
-            fn clear_dma_interrupts(&mut self) {
-                self.borrow_mut().clear_dma_interrupts()
             }
 
             fn clear_idle_interrupt(&mut self) {
@@ -495,19 +611,54 @@ mod tests {
         }
     }
 
-    impl TxTransferProxy<MockTxBuffer> for MockTxTransfer {
+    impl TransferProxy<MockTxBuffer> for MockTxTransfer {
 
-        fn get_fifo_error_flag(&self) -> bool {
+        fn is_fifo_error(&self) -> bool {
             self.fifo_error
         }
 
-        fn get_transfer_complete_flag(&self) -> bool {
+        fn is_transfer_complete(&self) -> bool {
             self.transfer_complete
+        }
+
+        fn is_direct_mode_error(&self) -> bool {
+            todo!()
+        }
+
+        fn is_half_transfer(&self) -> bool {
+            todo!()
+        }
+
+        fn is_transfer_error(&self) -> bool {
+            todo!()
         }
 
         fn clear_dma_interrupts(&mut self) {
             self.clear_dma_interrupts_calls += 1;
         }
+
+        fn clear_direct_mode_error(&mut self) {
+            todo!()
+        }
+
+        fn clear_fifo_error(&mut self) {
+            todo!()
+        }
+
+        fn clear_half_transfer(&mut self) {
+            todo!()
+        }
+
+        fn clear_transfer_complete(&mut self) {
+            todo!()
+        }
+
+        fn clear_transfer_error(&mut self) {
+            todo!()
+        }
+    }
+
+    impl TxTransferProxy<MockTxBuffer> for MockTxTransfer {
 
 
         fn next_transfer(&mut self, new_buf: MockTxBuffer) -> Result<MockTxBuffer, DMAError<MockTxBuffer>> {
@@ -523,20 +674,54 @@ mod tests {
 
     }
 
-    impl TxTransferProxy<MockTxBuffer> for Rc<RefCell<MockTxTransfer>> {
+    impl TransferProxy<MockTxBuffer> for Rc<RefCell<MockTxTransfer>> {
 
-        fn get_fifo_error_flag(&self) -> bool {
-            self.borrow().get_fifo_error_flag()
+        fn is_fifo_error(&self) -> bool {
+            self.borrow().is_fifo_error()
         }
 
-        fn get_transfer_complete_flag(&self) -> bool {
-            self.borrow().get_transfer_complete_flag()
+        fn is_transfer_complete(&self) -> bool {
+            self.borrow().is_transfer_complete()
+        }
+
+        fn is_direct_mode_error(&self) -> bool {
+            todo!()
+        }
+
+        fn is_half_transfer(&self) -> bool {
+            todo!()
+        }
+
+        fn is_transfer_error(&self) -> bool {
+            todo!()
         }
 
         fn clear_dma_interrupts(&mut self) {
             self.borrow_mut().clear_dma_interrupts()
         }
 
+        fn clear_direct_mode_error(&mut self) {
+            todo!()
+        }
+
+        fn clear_fifo_error(&mut self) {
+            todo!()
+        }
+
+        fn clear_half_transfer(&mut self) {
+            todo!()
+        }
+
+        fn clear_transfer_complete(&mut self) {
+            todo!()
+        }
+
+        fn clear_transfer_error(&mut self) {
+            todo!()
+        }
+    }
+
+    impl TxTransferProxy<MockTxBuffer> for Rc<RefCell<MockTxTransfer>> {
         fn next_transfer(&mut self, new_buf: MockTxBuffer) -> Result<MockTxBuffer, DMAError<MockTxBuffer>> {
             self.borrow_mut().next_transfer(new_buf)
         }

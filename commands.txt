@@ -9,7 +9,7 @@ cargo objdump --bin app --release -- --disassemble --no-show-raw-insn --print-im
 arm-none-eabi-gdb  -x openocd.gdb -q
 cargo flash --chip help
  probe-run --list-chips
- arm-none-eabi-gdb  -x openocd.gdb  target/thumbv7em-none-eabihf/debug/examples/hello
+ arm-none-eabi-gdb  -x openocd.gdb  target/thuhmbv7em-none-eabihf/debug/examples/hello
  openocd -f interface/stlink-v2.cfg -f target/stm32f4x.cfg
 qemu-system-arm -cpu cortex-m4 -machine netduinoplus2 -nographic -semihosting-config enable=on,target=native
  -gdb tcp::3333 -S -kernel target/thumbv7em-none-eabihf/debug/examples/hello
