@@ -14,7 +14,7 @@ mod app {
     };
     use dwt_systick_monotonic::DwtSystick;
     use embedded_alloc::Heap;
-    use board::{ Board, ControllerLinkSlave6, InWork };
+    use board::{ Board, ControllerLinkSlave1, InWork };
 
 
     #[global_allocator]
@@ -26,7 +26,7 @@ mod app {
     struct Shared {
         in_work: InWork,
         #[lock_free]
-        controller_link_slave6: ControllerLinkSlave6,
+        controller_link_slave1: ControllerLinkSlave1,
     }
 
     #[local]
@@ -46,14 +46,14 @@ mod app {
             unsafe { HEAP.init(HEAP_MEM.as_ptr() as usize, HEAP_SIZE) }
         }
 
-        let Board { controller_link_slave6, in_work } = Board::init(ctx.device, MONO_HZ);
+        let Board { controller_link_slave1, in_work } = Board::init(ctx.device, MONO_HZ);
 
         let mono = DwtSystick::new(&mut ctx.core.DCB, ctx.core.DWT, ctx.core.SYST, MONO_HZ);
 
         polling::spawn_after(1.secs()).ok();
 
         (
-            Shared { controller_link_slave6, in_work },
+            Shared { controller_link_slave1, in_work },
             Local {  },
             init::Monotonics(mono),
         )
@@ -89,10 +89,11 @@ mod app {
     }
 
     // Important! USART1 and DMA2_STREAM2 should the same interrupt priority!
-    #[task(binds = USART1, priority=1, local = [],shared = [in_work])]
+    #[task(binds = USART1, priority=1, local = [],shared = [controller_link_slave1, in_work])]
     fn usart1(mut ctx: usart1::Context) {
-        ctx.shared.in_work.lock(|in_work: &mut InWork| {
-            in_work.on_usart1();
+        let usart1::SharedResources { mut controller_link_slave1, mut in_work } = ctx.shared;
+        in_work.lock(|in_work: &mut InWork| {
+            controller_link_slave1.on_get_command(&mut in_work.rtc)
         });
     }
 
@@ -103,36 +104,14 @@ mod app {
         });
     }
 
-    #[task(binds = USART6, priority=1, local = [], shared = [controller_link_slave6, in_work])]
-    fn usart6(mut ctx: usart6::Context) {
-        let usart6::SharedResources { mut controller_link_slave6, mut in_work } = ctx.shared;
-        in_work.lock(|in_work: &mut InWork| {
-            controller_link_slave6.on_get_command(&mut in_work.rtc)
-        });
-    }
-
-    #[task(binds = DMA2_STREAM2, priority=1, shared = [in_work])]
+    #[task(binds = DMA2_STREAM2, priority=1, shared = [controller_link_slave1])]
     fn dma2_stream2(mut ctx: dma2_stream2::Context) {
-        ctx.shared.in_work.lock(|in_work: &mut InWork| {
-            in_work.on_dma2_stream2();
-        });
+        ctx.shared.controller_link_slave1.on_rx_dma_interrupts();
     }
 
-    #[task(binds = DMA2_STREAM7, priority=1, shared = [in_work])]
+    #[task(binds = DMA2_STREAM7, priority=1, shared = [controller_link_slave1])]
     fn dma2_stream7(mut ctx: dma2_stream7::Context) {
-        ctx.shared.in_work.lock(|in_work: &mut InWork| {
-            in_work.on_dma2_stream7();
-        });
-    }
-
-    #[task(binds = DMA2_STREAM1, priority=1, shared = [controller_link_slave6])]
-    fn dma2_stream1(mut ctx: dma2_stream1::Context) {
-        ctx.shared.controller_link_slave6.on_rx_dma_interrupts();
-    }
-
-    #[task(binds = DMA2_STREAM6, priority=1,shared = [controller_link_slave6])]
-    fn dma2_stream6(mut ctx: dma2_stream6::Context) {
-        ctx.shared.controller_link_slave6.on_tx_dma_interrupts();
+        ctx.shared.controller_link_slave1.on_tx_dma_interrupts();
     }
 
     #[task(binds = DMA1_STREAM5, priority=1, shared = [in_work])]
@@ -162,6 +141,13 @@ mod app {
             in_work.on_polling();
         });
         polling::spawn_after(1.secs()).ok();
+    }
+
+    #[task(binds=OTG_FS, shared=[in_work])]
+    fn usb_fs(mut cx: usb_fs::Context) {
+        cx.shared.in_work.lock(|in_work: &mut InWork| {
+            in_work.on_usb_otg_fs();
+        });
     }
 
 }

@@ -38,3 +38,5 @@ load
 
 # start the process but immediately halt the processor
 continue
+
+continue
